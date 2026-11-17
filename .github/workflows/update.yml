@@ -3,14 +3,23 @@
 # Every run downloads the SQLite database from the "data" release, fetches new data when it's due
 # (market.py decides: every run during market hours, then evenings until the day's final data is in),
 # saves the database back to the release, and rebuilds the static site.
+#
+# Runs keep themselves going: the last job waits until the next due time (every 15 min during market
+# hours and weekday evenings, otherwise the next market open) and then starts the next run. GitHub's cron
+# schedule is unreliable (runs can be delayed for hours or dropped), so it is only a backup that restarts
+# the chain if it ever stops. Only one waiting job exists at a time: a newer one cancels the older.
 name: Update dashboard
 
 on:
   schedule:
-    # Every 15 min, 08:37–00:22 IST, Mon–Fri (cron is UTC; odd minutes dodge GitHub's top-of-hour backlog).
-    # Most runs outside market hours exit in seconds because nothing is due.
+    # Backup only. Every 15 min, 08:37–00:22 IST, Mon–Fri (cron is UTC; odd minutes dodge the top-of-hour backlog).
     - cron: "7,22,37,52 3-18 * * 1-5"
-  workflow_dispatch:   # "Run workflow" button = Fetch now
+  workflow_dispatch:   # "Run workflow" button = fetch right away
+    inputs:
+      force:
+        description: "Fetch now even if nothing is due"
+        type: boolean
+        default: true
   push:
     branches: [main]   # code changes: rebuild the site from the stored data
 
@@ -18,10 +27,7 @@ permissions:
   contents: write      # update the "data" release and the keep-alive commit
   pages: write
   id-token: write
-
-concurrency:
-  group: update-dashboard
-  cancel-in-progress: false
+  actions: write       # start the next run
 
 env:
   TZ: Asia/Kolkata
@@ -32,6 +38,9 @@ jobs:
   update:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    concurrency:       # one update at a time, so database uploads never overlap
+      group: update-dashboard
+      cancel-in-progress: false
     outputs:
       built: ${{ steps.build.outcome == 'success' }}
     steps:
@@ -50,7 +59,7 @@ jobs:
         id: fetch
         if: github.event_name != 'push'
         run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
             python3 market.py snapshot
           else
             python3 market.py auto
@@ -66,17 +75,18 @@ jobs:
 
       - name: Build site
         id: build
-        if: steps.fetch.outputs.changed == 'true' || github.event_name != 'schedule'
+        if: steps.fetch.outputs.changed == 'true' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.force)
         run: python3 market.py export site
 
       - uses: actions/upload-pages-artifact@v5
         if: steps.build.outcome == 'success'
         with:
           path: site
+          retention-days: 1
 
-      # GitHub pauses scheduled workflows in public repos after 60 days without repository activity.
+      # GitHub pauses cron schedules in public repos after 60 days without repository activity.
       - name: Keep the schedule alive
-        if: github.event_name == 'schedule'
+        if: github.event_name != 'push'
         run: |
           last=$(git log -1 --format=%ct)
           if [ $(( $(date +%s) - last )) -gt $(( 50 * 86400 )) ]; then
@@ -96,3 +106,20 @@ jobs:
     steps:
       - id: deploy
         uses: actions/deploy-pages@v5
+
+  next:
+    needs: [update, deploy]
+    if: always()       # keep the chain going even if this run's fetch failed
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    concurrency:       # only one waiting job: a newer run's one replaces this
+      group: dashboard-next
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v7
+      - name: Wait until the next update is due, then start it
+        run: |
+          secs=$(python3 market.py next-wait)
+          echo "Next run in $((secs / 60)) min"
+          sleep "$secs"
+          gh workflow run update.yml --repo "${{ github.repository }}" -f force=false

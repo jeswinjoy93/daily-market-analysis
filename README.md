@@ -32,9 +32,12 @@ From the command line: `python3 market.py snapshot` · `python3 market.py auto` 
 The workflow [.github/workflows/update.yml](.github/workflows/update.yml) runs the dashboard without a server,
 for free, as a static site on GitHub Pages:
 
-- **Schedule:** every 15 minutes on weekdays from 08:37 to 00:22 IST. Each run runs `market.py auto`, which fetches only when due,
-  using the same rule as the local server: every run during market hours, then from 17:00 until the day's final data is stored.
-  Runs that aren't due finish in seconds. GitHub may start scheduled runs 5–30 minutes late.
+- **Schedule:** runs keep themselves going. Each run ends with a job that waits until the next update is due
+  (`market.py next-wait`: every 15 minutes during market hours and weekday evenings, otherwise the next market open) and then
+  starts the next run. Each run runs `market.py auto`, which fetches only when due, using the same rule as the local server:
+  every run during market hours, then from 17:00 until the day's final data is stored.
+  GitHub's own cron schedule is kept only as a backup that restarts the chain if it ever stops: on a new repo it didn't fire
+  at all for hours. Only one waiting job exists at a time (a newer one cancels the older), so the chain can't multiply.
 - **Fetch right away:** Actions tab → *Update dashboard* → **Run workflow**.
 - **Database:** `market.db.gz` is stored as a file on a release named `data`. Each run downloads it, adds new data and uploads it again.
   Keeping it out of git avoids repository bloat.
@@ -137,7 +140,9 @@ live price  = previous close × (1 + live 1D %)
 - On end-of-day data this formula reproduces Trendvue's own % from high to within 0.01 for every stock.
 - A live snapshot is stored for today and marked provisional. Each fetch replaces it.
   After Trendvue's end-of-day update, a fetch replaces it with Trendvue's final numbers.
-- The 1D move of the reference stock `RELIANCE` (`PROBE_SYMBOL`), compared with its daily bars, tells which session each source reflects.
+- Which session each source reflects is found by matching the reference stock `RELIANCE`'s (`PROBE_SYMBOL`) 1D move in that source
+  to the daily bar with the same move. (Matching prices doesn't work: the latest bar's close is derived from the move.) The data
+  counts as final only when the listing's and the stock lists' 1D moves agree for at least 90% of stocks.
   If the sources disagree, which only happens while Trendvue is mid-update, the fetch stops with "try again in a few minutes".
 - A live fetch also stores the previous session's final data if that session is missing or only provisional.
 - **Live limitation:** today's intraday high isn't available in bulk. A stock that set a new 52W high earlier today and then fell back

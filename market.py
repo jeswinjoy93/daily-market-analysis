@@ -5,6 +5,7 @@ Usage:
     python3 market.py auto          # fetch only if due (market hours, or evening until the day's final data is in)
     python3 market.py compare       # print latest vs previous in the terminal
     python3 market.py export DIR    # write the dashboard as a static site (index.html + data/*.json)
+    python3 market.py next-wait     # seconds until the next update is due (used by the GitHub workflow)
 """
 import hashlib
 import json
@@ -16,7 +17,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 BASE = Path(__file__).resolve().parent
@@ -32,10 +33,10 @@ MIN_MCAP_CR = 1000  # universe: only stocks with market cap >= this (₹ crore),
 MIN_GROUP_STOCKS = 3  # sectors/industries need at least this many stocks in the universe to be ranked
 # A liquid stock's daily bars (the last one is live during market hours) tell us which session each source reflects.
 PROBE_SYMBOL = "RELIANCE"
-PROBE_URL = f"https://trendvue.in/api/eod/{PROBE_SYMBOL}?days=3"
+PROBE_URL = f"https://trendvue.in/api/eod/{PROBE_SYMBOL}?days=5"
 
 # Automatic fetch schedule, local time (IST; NSE trades 09:15-15:30).
-MARKET_HOURS = ((9, 15), (15, 45))  # live refreshes; the last one after 15:30 records the closing prices
+MARKET_HOURS = ((9, 15), (15, 50))  # live refreshes; the last one after 15:30 records the closing prices
 AUTO_AFTER_HOUR = 17  # from then on, fetch until the day's final end-of-day data is stored
 
 # "% of stocks within N% of their 52-week high" — the metric on the Trendvue page.
@@ -130,21 +131,30 @@ def _pct_change(a, b):
 
 
 def _sessions(listing, lists_1d):
-    """Work out which session each source reflects, using the probe stock's daily bars.
-
-    Returns (date, live, base_date):
+    """Work out which session each source reflects. Returns (date, live, base_date):
       live=False: the listing is already updated for the latest session `date` (after Trendvue's EOD refresh).
       live=True:  the listing is still the previous session `base_date`; the stock lists' 1D is today's live move.
+
+    Each source's 1D move for the probe stock is matched to the daily bar with the same move, which dates it.
+    (Matching prices is unreliable: the latest bar's close is derived from the move, e.g. 1367.56 vs an official 1367.0.)
+    The listing counts as caught up only when its 1D also agrees with the live lists for nearly every stock.
     """
     bars = fetch_json(PROBE_URL)
-    last, prev = bars[-1], bars[-2]
-    lst, d1 = listing.get(PROBE_SYMBOL) or {}, lists_1d.get(PROBE_SYMBOL)
-    move = _pct_change(last["close"], prev["close"])
-    near = lambda x, y, tol: x is not None and abs(x - y) <= tol
-    if near(lst.get("close"), last["close"], 0.01) and near(lst.get("1D"), move, 0.05):
-        return last["date"][:10], False, None
-    if near(lst.get("close"), prev["close"], 0.01) and near(d1, move, 0.05):
-        return last["date"][:10], True, prev["date"][:10]
+    moves = [(bars[i]["date"][:10], _pct_change(bars[i]["close"], bars[i - 1]["close"])) for i in range(1, len(bars))]
+    dates = [d for d, _ in moves]
+
+    def session_of(d1):  # latest bar whose day move matches
+        return next((d for d, mv in reversed(moves) if d1 is not None and abs(d1 - mv) <= 0.05), None)
+
+    listing_date = session_of((listing.get(PROBE_SYMBOL) or {}).get("1D"))
+    lists_date = session_of(lists_1d.get(PROBE_SYMBOL))
+    both = [(listing[s]["1D"], d1) for s, d1 in lists_1d.items()
+            if d1 is not None and (listing.get(s) or {}).get("1D") is not None]
+    agree = sum(abs(a - b) <= 0.05 for a, b in both) / max(len(both), 1)
+    if listing_date and listing_date == lists_date and agree >= 0.9:
+        return listing_date, False, None
+    if listing_date and lists_date and dates.index(lists_date) == dates.index(listing_date) + 1 and agree < 0.9:
+        return lists_date, True, listing_date
     raise RuntimeError("The data source is mid-update (its feeds disagree on the session); try again in a few minutes")
 
 
@@ -385,6 +395,19 @@ def snapshot_due(con, now=None):
     return False
 
 
+def next_wait_seconds(now=None, step_min=15, cap=5 * 3600 + 45 * 60):
+    """Seconds until the next update is due, for the self-scheduling GitHub workflow: the next 15-minute slot
+    during weekday market hours or weekday evenings (from AUTO_AFTER_HOUR), else the next market open.
+    Capped below GitHub's 6-hour job limit; a capped wait just starts a run that finds nothing due and waits again."""
+    now = now or datetime.now()
+    def active(t):
+        return t.weekday() < 5 and (MARKET_HOURS[0] <= (t.hour, t.minute) <= MARKET_HOURS[1] or t.hour >= AUTO_AFTER_HOUR)
+    t = (now + timedelta(minutes=step_min - now.minute % step_min)).replace(second=0, microsecond=0)
+    while not active(t):
+        t += timedelta(minutes=step_min)
+    return min(int((t - now).total_seconds()) + 60, cap)  # +1 min: start just after the slot
+
+
 def export_site(con, out_dir):
     """Write the dashboard as a static site: index.html plus data/index.json (sessions) and
     data/<date>.json per session, holding every threshold's numbers, so no server is needed."""
@@ -438,6 +461,8 @@ if __name__ == "__main__":
                 res = {"stored": False, "reason": str(e)}  # transient: the next scheduled run picks it up
             print(json.dumps(res))
             _github_output(changed=str(res["stored"]).lower())
+    elif cmd == "next-wait":
+        print(next_wait_seconds())
     elif cmd == "export":
         out = sys.argv[2] if len(sys.argv) > 2 else "site"
         print(f"Exported {export_site(con, out)} sessions to {out}/")
