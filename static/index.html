@@ -1,0 +1,358 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daily Market Analysis</title>
+<script>window.STATIC_SITE = false;</script><!-- set to true by `market.py export` (GitHub Pages build) -->
+<style>
+:root {
+  --page: #f9f9f7; --surface: #fcfcfb; --ink: #0b0b0b; --ink-2: #52514e; --muted: #898781;
+  --grid: #e1e0d9; --axis: #c3c2b7; --border: rgba(11,11,11,0.10);
+  --up: #2a78d6; --down: #e34948;            /* diverging bar fills (validated pair) */
+  --up-text: #006300; --down-text: #c42f2f;  /* delta text */
+  --mid: #f0efec; --hover: rgba(11,11,11,0.04);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
+    --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
+    --up: #3987e5; --down: #e66767; --up-text: #0ca30c; --down-text: #ef7b7b;
+    --mid: #383835; --hover: rgba(255,255,255,0.05);
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--page); color: var(--ink);
+  font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 28px 16px 64px; }
+header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
+.sub { color: var(--ink-2); margin: 0; }
+.controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+select, button { font: inherit; color: var(--ink); background: var(--surface); border: 1px solid var(--border);
+  border-radius: 8px; padding: 6px 10px; cursor: pointer; }
+button:hover, select:hover { background: var(--hover); }
+.tv { display: inline-flex; }
+.tv button:first-child { border-radius: 8px 0 0 8px; }
+.tv button:last-child { border-radius: 0 8px 8px 0; border-left: 0; }
+.seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; border-radius: 0; padding: 6px 10px; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+@media (max-width: 720px) { .grid2 { grid-template-columns: 1fr; } }
+h2 { font-size: 15px; margin: 0 0 12px; display: flex; align-items: center; gap: 8px; }
+h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
+.item { border-top: 1px solid var(--grid); }
+.item:first-child { border-top: 0; }
+.mover { display: grid; grid-template-columns: 20px 1fr auto auto; gap: 10px; align-items: baseline;
+  padding: 8px 4px; margin: 0 -4px; border-radius: 6px; cursor: pointer; }
+.mover:hover { background: var(--hover); }
+.mover .caret { width: 12px; font-size: 11px; }
+.item.open .caret { transform: rotate(90deg); }
+.stocks { max-height: 340px; overflow-y: auto; margin: 0 0 10px 30px; padding: 6px 10px; border-radius: 8px; background: var(--page); border: 1px solid var(--border); }
+.stocks .hd { position: sticky; top: -6px; background: var(--page); padding-top: 2px; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .04em; margin-bottom: 2px;
+  display: grid; grid-template-columns: 1fr repeat(3, 56px); gap: 8px; }
+.stock { display: grid; grid-template-columns: 1fr repeat(3, 56px); gap: 8px; align-items: baseline; padding: 3px 0; font-size: 13px; }
+.stock > * { min-width: 0; }
+.stock .sym { font-weight: 600; }
+.stock .co { color: var(--muted); font-size: 12px; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stock .num, .stocks .hd span:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
+.rank { color: var(--muted); font-variant-numeric: tabular-nums; }
+.mover .name { font-weight: 550; }
+.mover .meta { color: var(--muted); font-size: 12px; }
+.mover .meta .nc { font-weight: 600; color: var(--ink-2); }
+.mover .vals { color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.delta { font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.delta.up { color: var(--up-text); } .delta.down { color: var(--down-text); } .delta.flat { color: var(--muted); }
+.grid2 > *, .mover > * { min-width: 0; }
+@media (max-width: 520px) {
+  .mover { grid-template-columns: 20px 1fr auto; row-gap: 2px; }
+  .mover .vals { grid-column: 2; grid-row: 2; font-size: 12px; }
+}
+.empty { color: var(--muted); padding: 8px 0; }
+.notice { background: var(--surface); border: 1px dashed var(--axis); border-radius: 12px; padding: 12px 16px;
+  margin-bottom: 16px; color: var(--ink-2); }
+
+/* leaders: ranked by level (not change) */
+.section-note { color: var(--ink-2); margin: 8px 0 10px; font-size: 13px; }
+
+/* table */
+.tbl-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+th, td { padding: 8px 10px; text-align: right; border-top: 1px solid var(--grid); white-space: nowrap; }
+th { font-weight: 600; color: var(--ink-2); font-size: 12px; border-top: 0; cursor: pointer; user-select: none; }
+th:first-child, td:first-child { text-align: left; }
+tr.sector { cursor: pointer; }
+tr.sector:hover td { background: var(--hover); }
+tr.sector td:first-child { font-weight: 550; }
+tr.ind td { color: var(--ink-2); font-size: 13px; }
+tr.ind td:first-child { padding-left: 32px; }
+.caret { display: inline-block; width: 14px; font-style: normal; color: var(--muted); transition: transform .15s; }
+tr.open .caret { transform: rotate(90deg); }
+.hint { font-weight: 400; font-size: 12px; color: var(--muted); margin-left: auto; }
+.status { color: var(--muted); font-size: 12px; min-height: 18px; }
+.live { display: inline-block; font-size: 11px; font-weight: 650; letter-spacing: .05em; padding: 1px 7px; margin-right: 4px;
+  border-radius: 999px; background: var(--ink); color: var(--surface); vertical-align: 1px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Daily Market Analysis</h1>
+      <p class="sub" id="subtitle">Loading…</p>
+    </div>
+    <div class="controls">
+      <div class="seg" id="metricSeg" role="group" aria-label="Within % of 52-week high"></div>
+      <select id="dateSel" aria-label="Session"></select>
+      <button id="fetchBtn" title="Fetch the latest data now">Fetch now</button>
+      <span class="tv">
+        <button id="tvCopy" title="Copy all listed stocks as a TradingView watchlist, in 4 sections with a sub-section per sector/industry">Copy for TradingView</button><button id="tvDownload" title="Download as a .txt file for TradingView: watchlist menu → Import list…" aria-label="Download TradingView watchlist file">↓ .txt</button>
+      </span>
+    </div>
+  </header>
+  <div class="status" id="status"></div>
+  <div id="notice"></div>
+
+  <div class="grid2">
+    <section class="card"><h2><span class="dot" style="background:var(--up)"></span>Top 5 strong sectors today<span class="hint">click for stocks</span></h2><div id="strength"></div></section>
+    <section class="card"><h2><span class="dot" style="background:var(--up)"></span>Top 5 strong industries today<span class="hint">click for stocks</span></h2><div id="industryStrength"></div></section>
+  </div>
+
+  <p class="section-note" id="leadersNote"></p>
+  <div class="grid2">
+    <section class="card"><h2>Top 5 strong sectors<span class="hint">click for stocks</span></h2><div id="topSectors"></div></section>
+    <section class="card"><h2>Top 5 strong industries<span class="hint">click for stocks</span></h2><div id="topIndustries"></div></section>
+  </div>
+
+  <section class="card">
+    <h2>All sectors <span class="sub" style="font-weight:400;font-size:12px">— click a sector to see its industries</span></h2>
+    <div class="tbl-wrap"><table id="tbl"></table></div>
+  </section>
+</div>
+
+<script>
+const METRICS = [["near_52w_2","2%"],["near_52w_5","5%"],["near_52w_10","10%"],["near_52w_15","15%"],["near_52w_20","20%"]];
+const state = { metric: "near_52w_10", date: null, data: null, sort: { key: "change", dir: -1 }, open: new Set(), openStocks: new Set() };
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+const fmt = v => v == null ? "—" : v.toFixed(1) + "%";
+const fmtD = v => v == null ? "—" : (v > 0 ? "▲ +" : v < 0 ? "▼ " : "") + v.toFixed(1) + " pts";
+const cls = v => v == null || v === 0 ? "flat" : v > 0 ? "up" : "down";
+const fmtDate = d => d ? new Date(d + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" }) : "";
+const pctLabel = () => METRICS.find(m => m[0] === state.metric)[1];
+
+try { const m = localStorage.getItem("metric"); if (METRICS.some(x => x[0] === m)) state.metric = m; } catch (e) {}
+
+function renderMetricSeg() {
+  $("metricSeg").innerHTML = METRICS.map(([k, l]) =>
+    `<button data-k="${k}" aria-pressed="${k === state.metric}">${l}</button>`).join("");
+}
+$("metricSeg").addEventListener("click", e => {
+  const k = e.target.dataset.k; if (!k) return;
+  state.metric = k; try { localStorage.setItem("metric", k); } catch (e) {}
+  renderMetricSeg(); load();
+});
+$("dateSel").addEventListener("change", e => { state.date = e.target.value; load(); });
+$("fetchBtn").addEventListener("click", async () => {
+  $("fetchBtn").disabled = true; $("status").textContent = "Fetching… (takes about a minute)";
+  try {
+    const r = await fetch("/api/snapshot", { method: "POST" }).then(r => r.json());
+    $("status").textContent = r.error ? r.error
+      : !r.stored ? r.reason
+      : r.live ? `Live update for ${fmtDate(r.date)}: ${r.stocks} stocks at current prices (provisional until the end-of-day update).`
+      : `Stored final data for ${fmtDate(r.date)}: ${r.sectors} sectors, ${r.industries} industries, ${r.stocks} stocks.`;
+    state.date = null; await load();
+  } catch (e) { $("status").textContent = "Fetch failed: " + e.message; }
+  $("fetchBtn").disabled = false;
+});
+
+async function load() {
+  state.data = window.STATIC_SITE ? await loadStatic() : await fetch("/api/compare?" + new URLSearchParams(
+    { metric: state.metric, ...(state.date ? { date: state.date } : {}) })).then(r => r.json());
+  render();
+}
+
+// Static site (GitHub Pages): data/index.json lists the sessions; data/<date>.json has every threshold.
+const sessionFiles = {};
+async function loadStatic() {
+  const getJSON = url => fetch(url, { cache: "no-store" }).then(r => { if (!r.ok) throw new Error(r.status + " " + url); return r.json(); });
+  const idx = await getJSON("data/index.json");
+  if (!idx.dates.length) return { date: null, dates: [] };
+  const date = idx.dates.includes(state.date) ? state.date : idx.dates[0];
+  const key = date + "@" + idx.generated_at;  // re-download only when the site has been rebuilt
+  const f = sessionFiles[key] || (sessionFiles[key] = await getJSON(`data/${date}.json`));
+  return { ...f, ...f.by_metric[state.metric], metric: state.metric, dates: idx.dates, live_dates: idx.live_dates };
+}
+if (window.STATIC_SITE) $("fetchBtn").hidden = true;  // updates come from the scheduled GitHub workflow
+
+// Top 5 stocks closest to their 52-week high, shown when a card row is expanded.
+const r1 = v => v == null ? null : (Math.round(v * 10) / 10 || 0);  // round to 0.1, no "-0.0"
+function stocksPanel(kind, name) {
+  const list = (state.data.top_stocks || {})[kind]?.[name];
+  const minCap = "₹" + (state.data.min_mcap_cr ?? 1000).toLocaleString("en-IN") + " cr";
+  if (!list || !list.length) return `<div class="stocks"><div class="empty">No stocks with market cap ≥ ${minCap} within ${state.data.max_dist_from_high ?? 10}% of their 52W high.</div></div>`;
+  return `<div class="stocks"><div class="hd"><span title="Closest to their 52-week high first">Stock (${list.length})</span><span>1D</span><span>1W</span><span>1M</span></div>` +
+    list.map(st => `<div class="stock">
+      <span><span class="sym">${esc(st.symbol)}</span><span class="co">${esc(st.company || "")}</span></span>
+      ${[st.change_1d, st.change_1w, st.change_1m].map(v => `<span class="num delta ${v == null ? "flat" : cls(r1(v))}">${v == null ? "—" : (r1(v) > 0 ? "+" : "") + r1(v).toFixed(1) + "%"}</span>`).join("")}
+    </div>`).join("") + `</div>`;
+}
+function nearCount(kind, name) {
+  const n = ((state.data.top_stocks || {})[kind]?.[name] || []).length;
+  const cap = "₹" + (state.data.min_mcap_cr ?? 1000).toLocaleString("en-IN") + " cr";
+  return ` · <b class="nc" title="Stocks within ${state.data.max_dist_from_high ?? 10}% of their 52W high with market cap ≥ ${cap}">${n} near high</b>`;
+}
+function item(kind, r, inner) {
+  const key = kind + "|" + r.name, open = state.openStocks.has(key);
+  return `<div class="item${open ? " open" : ""}" data-key="${esc(key)}">${inner}${open ? stocksPanel(kind, r.name) : ""}</div>`;
+}
+document.addEventListener("click", e => {
+  const m = e.target.closest(".mover"); if (!m) return;
+  const it = m.closest(".item"), key = it.dataset.key;
+  state.openStocks.has(key) ? state.openStocks.delete(key) : state.openStocks.add(key);
+  render();
+});
+
+function moverList(el, rows, showSector) {
+  if (!state.data.prev_date) { el.innerHTML = `<div class="empty">Needs a previous session to compare.</div>`; return; }
+  if (!rows.length) { el.innerHTML = `<div class="empty">Nothing gained since the previous session.</div>`; return; }
+  el.innerHTML = rows.map((r, i) => item(showSector ? "industry" : "sector", r, `
+    <div class="mover">
+      <span class="rank">${i + 1}</span>
+      <span><span class="name"><i class="caret">▸</i>${esc(r.name)}</span><br><span class="meta">${r.stock_count} stocks${nearCount(showSector ? "industry" : "sector", r.name)}</span></span>
+      <span class="vals">${fmt(r.value)}</span>
+      <span class="delta ${cls(r.change)}">${fmtD(r.change)}</span>
+    </div>`)).join("");
+}
+
+const topByLevel = rows => rows
+  .filter(r => r.value != null && (r.stock_count ?? 0) >= (state.data.min_group_stocks ?? 3))  // skip tiny groups
+  .sort((a, b) => b.value - a.value).slice(0, 5);
+
+function leaderList(el, rows, showSector) {
+  const top = topByLevel(rows);
+  if (!top.length) { el.innerHTML = `<div class="empty">No data.</div>`; return; }
+  el.innerHTML = top.map((r, i) => item(showSector ? "industry" : "sector", r, `
+    <div class="mover">
+      <span class="rank">${i + 1}</span>
+      <span><span class="name"><i class="caret">▸</i>${esc(r.name)}</span><br><span class="meta">${r.stock_count} stocks${nearCount(showSector ? "industry" : "sector", r.name)}</span></span>
+      <span class="vals">${fmt(r.value)}</span>
+      <span class="delta ${cls(r.change)}">${state.data.prev_date ? fmtD(r.change) : ""}</span>
+    </div>`)).join("");
+}
+
+function renderLeaders() {
+  $("leadersNote").textContent = `Strongest right now: highest % of stocks within ${pctLabel()} of their 52-week high on ${fmtDate(state.data.date)}`;
+  leaderList($("topSectors"), state.data.sectors, false);
+  leaderList($("topIndustries"), state.data.industries, true);
+}
+
+function renderTable() {
+  const { sectors, industries, prev_date } = state.data;
+  const { key, dir } = state.sort;
+  const cmp = (a, b) => {
+    const x = a[key], y = b[key];
+    if (typeof x === "string") return dir * x.localeCompare(y);
+    return dir * ((x ?? -1e9) - (y ?? -1e9));
+  };
+  const cols = [["name", "Sector / industry"], ["stock_count", "Stocks"], ["prev", prev_date ? `Prev (${prev_date})` : "Prev"], ["value", `Now (${state.data.date})`], ["change", "Change"]];
+  const head = `<thead><tr>${cols.map(([k, l]) => `<th data-k="${k}">${esc(l)}${k === key ? (dir > 0 ? " ↑" : " ↓") : ""}</th>`).join("")}</tr></thead>`;
+  const row = (r, isInd) => `<tr class="${isInd ? "ind" : "sector" + (state.open.has(r.name) ? " open" : "")}" data-name="${esc(r.name)}">
+      <td>${isInd ? "" : `<span class="caret">▸</span>`}${esc(r.name)}</td><td>${r.stock_count ?? "—"}</td>
+      <td>${fmt(r.prev)}</td><td>${fmt(r.value)}</td><td class="delta ${cls(r.change)}">${fmtD(r.change)}</td></tr>`;
+  const body = [...sectors].sort(cmp).map(s => row(s, false) +
+    (state.open.has(s.name) ? industries.filter(i => i.sector === s.name).sort(cmp).map(i => row(i, true)).join("") : "")).join("");
+  $("tbl").innerHTML = head + `<tbody>${body}</tbody>`;
+}
+$("tbl").addEventListener("click", e => {
+  const th = e.target.closest("th");
+  if (th) { const k = th.dataset.k; state.sort = { key: k, dir: state.sort.key === k ? -state.sort.dir : (k === "name" ? 1 : -1) }; return renderTable(); }
+  const tr = e.target.closest("tr.sector");
+  if (tr) { const n = tr.dataset.name; state.open.has(n) ? state.open.delete(n) : state.open.add(n); renderTable(); }
+});
+
+function render() {
+  const d = state.data;
+  if (!d.date) {
+    $("subtitle").textContent = "No data yet.";
+    $("notice").innerHTML = `<div class="notice">No snapshots stored yet — ${window.STATIC_SITE ? "data appears after the first scheduled update." : "click <b>Fetch now</b> to record the first session."}</div>`;
+    ["strength", "industryStrength", "topSectors", "topIndustries"].forEach(id => $(id).innerHTML = ""); $("tbl").innerHTML = "";
+    return;
+  }
+  const live = new Set(d.live_dates || []);
+  $("dateSel").innerHTML = d.dates.map(x => `<option value="${x}" ${x === d.date ? "selected" : ""}>${fmtDate(x)}${live.has(x) ? " · live" : ""}</option>`).join("");
+  const asOf = d.fetched_at ? d.fetched_at.slice(11, 16) : "";
+  $("subtitle").innerHTML = (d.live ? `<span class="live" title="Computed from live prices: previous close × today's move, against the 52-week high. Final numbers replace it after the end-of-day update.">LIVE ${asOf}</span>` : "") +
+    esc(`% of stocks within ${pctLabel()} of 52-week high · ${fmtDate(d.date)}` + (d.prev_date ? ` vs ${fmtDate(d.prev_date)}` : "") +
+        (d.live ? " · provisional until the end-of-day update" : ""));
+  $("notice").innerHTML = d.prev_date ? "" :
+    `<div class="notice">Only one session stored so far. Day-over-day changes appear after the next session is recorded.</div>`;
+  moverList($("strength"), d.strength);
+  moverList($("industryStrength"), d.industry_strength, true);
+  renderLeaders();
+  renderTable();
+}
+
+// ---- TradingView export: "###Section,EXCH:SYM,..." (TradingView sections are one level deep,
+// so each card is a header section followed by one section per sector/industry).
+const tvSymbol = st => `${st.exchange || "NSE"}:${st.symbol.replace(/[^A-Za-z0-9]/g, "_")}`;
+const tvName = n => n.replace(/[,#]/g, "").replace(/\s+/g, " ").trim();
+function buildTradingViewList() {
+  const d = state.data, ts = d.top_stocks || {};
+  const cards = [
+    ["STRONG SECTORS TODAY", "sector", d.strength || []],
+    ["STRONG INDUSTRIES TODAY", "industry", d.industry_strength || []],
+    ["STRONG SECTORS", "sector", topByLevel(d.sectors || [])],
+    ["STRONG INDUSTRIES", "industry", topByLevel(d.industries || [])],
+  ];
+  const seen = new Set(), parts = [];
+  let count = 0, sections = 0;
+  for (const [title, kind, groups] of cards) {
+    if (!groups.length) continue;
+    parts.push("###" + title); sections++;
+    for (const g of groups) {
+      const all = (ts[kind]?.[g.name] || []).map(tvSymbol);
+      if (!all.length) continue;
+      const fresh = all.filter(x => !seen.has(x));  // a watchlist can hold each symbol only once
+      fresh.forEach(x => seen.add(x));
+      const dup = all.length - fresh.length;
+      parts.push(`###${tvName(g.name)} (${all.length}${dup ? ` - ${dup} listed above` : ""})`, ...fresh);
+      count += fresh.length;
+    }
+  }
+  return { text: parts.join(","), count, sections };
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) {}
+  const ta = Object.assign(document.createElement("textarea"), { value: text });
+  document.body.appendChild(ta); ta.select();
+  const ok = document.execCommand("copy"); ta.remove(); return ok;
+}
+$("tvCopy").addEventListener("click", async () => {
+  if (!state.data?.date) return;
+  const { text, count, sections } = buildTradingViewList();
+  if (!count) { $("status").textContent = "No stocks to copy for this session."; return; }
+  $("status").textContent = (await copyText(text))
+    ? `Copied ${count} symbols in ${sections} sections. In TradingView, paste into a watchlist's “Add symbol” box, or use ↓ .txt with “Import list…” to keep the sections.`
+    : "Copy failed — use ↓ .txt instead.";
+});
+$("tvDownload").addEventListener("click", () => {
+  if (!state.data?.date) return;
+  const { text, count } = buildTradingViewList();
+  const a = Object.assign(document.createElement("a"), {
+    href: URL.createObjectURL(new Blob([text], { type: "text/plain" })),
+    download: `Market Analysis ${state.data.date}.txt`,
+  });
+  a.click(); URL.revokeObjectURL(a.href);
+  $("status").textContent = `Downloaded ${count} symbols. In TradingView: watchlist name ▾ → Import list… → choose this file.`;
+});
+
+renderMetricSeg();
+load().catch(e => { $("subtitle").textContent = "Could not reach the server: " + e.message; });
+// While a live session is on screen, pick up the server's periodic live refreshes.
+setInterval(() => { if (!state.date && state.data?.live && !$("fetchBtn").disabled) load().catch(() => {}); }, 120000);
+</script>
+</body>
+</html>
