@@ -55,7 +55,8 @@ The date picker shows any stored session, compared against the session before it
 | **Top 5 strong industries today** | Same, for industries |
 | **Top 5 strong sectors** | Highest % right now |
 | **Top 5 strong industries** | Same, for industries |
-| **All sectors** table | Every sector, sortable. Click a sector to show its industries. |
+| **All sectors** table | Every sector. Sorted by **Current %** (highest first); click the **Current %** or **Delta** header to sort (again to reverse). Click a sector to filter the industries table to it. |
+| **All industries** table | Every industry (or the selected sector's), sortable the same way. Click an industry for its stocks. |
 
 Click any row in the four cards to see **its stocks**. The list contains every stock within 10% of its 52W high (closest first), with its company name and its
 1-day, 1-week and 1-month moves (live during market hours). Each row shows how many stocks are near their high.

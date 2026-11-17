@@ -77,19 +77,30 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
 /* leaders: ranked by level (not change) */
 .section-note { color: var(--ink-2); margin: 8px 0 10px; font-size: 13px; }
 
-/* table */
-.tbl-wrap { overflow-x: auto; }
-table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
-th, td { padding: 8px 10px; text-align: right; border-top: 1px solid var(--grid); white-space: nowrap; }
-th { font-weight: 600; color: var(--ink-2); font-size: 12px; border-top: 0; cursor: pointer; user-select: none; }
-th:first-child, td:first-child { text-align: left; }
-tr.sector { cursor: pointer; }
-tr.sector:hover td { background: var(--hover); }
-tr.sector td:first-child { font-weight: 550; }
-tr.ind td { color: var(--ink-2); font-size: 13px; }
-tr.ind td:first-child { padding-left: 32px; }
+/* all sectors / all industries tables */
+.gtable { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.gtable th, .gtable td { padding: 8px 6px; border-top: 1px solid var(--grid); text-align: right; vertical-align: baseline; }
+.gtable th { border-top: 0; font-size: 12px; font-weight: 600; color: var(--ink-2); white-space: nowrap; padding-top: 0; }
+.gtable th.sortable { cursor: pointer; user-select: none; }
+.gtable th.sortable:hover, .gtable th.sorted { color: var(--ink); }
+.gtable th:nth-child(-n+2), .gtable td:nth-child(-n+2) { text-align: left; }
+.gtable td.rank { width: 22px; padding-left: 4px; }
+.gtable td.name .name { font-weight: 550; }
+.gtable .meta { color: var(--muted); font-size: 12px; }
+.gtable .meta .nc { font-weight: 600; color: var(--ink-2); }
+.gtable td.num { color: var(--ink-2); white-space: nowrap; }
+.gtable tr.row { cursor: pointer; }
+.gtable tr.row:hover td { background: var(--hover); }
+.gtable tr.sel td { background: var(--mid); }
+.gtable tr.open .caret { transform: rotate(90deg); }
+.gtable td.panel { padding: 0 0 4px; border-top: 0; text-align: left; }
+.chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; }
+@media (max-width: 520px) {
+  .gtable th, .gtable td { padding-left: 3px; padding-right: 3px; }
+  .gtable td.rank { width: 16px; padding-left: 0; }
+  .gtable td.num, .gtable td.delta { font-size: 13px; }
+}
 .caret { display: inline-block; width: 14px; font-style: normal; color: var(--muted); transition: transform .15s; }
-tr.open .caret { transform: rotate(90deg); }
 .hint { font-weight: 400; font-size: 12px; color: var(--muted); margin-left: auto; }
 .status { color: var(--muted); font-size: 12px; min-height: 18px; }
 .live { display: inline-block; font-size: 11px; font-weight: 650; letter-spacing: .05em; padding: 1px 7px; margin-right: 4px;
@@ -126,15 +137,15 @@ tr.open .caret { transform: rotate(90deg); }
     <section class="card"><h2>Top 5 strong industries<span class="hint">click for stocks</span></h2><div id="topIndustries"></div></section>
   </div>
 
-  <section class="card">
-    <h2>All sectors <span class="sub" style="font-weight:400;font-size:12px">— click a sector to see its industries</span></h2>
-    <div class="tbl-wrap"><table id="tbl"></table></div>
-  </section>
+  <div class="grid2">
+    <section class="card"><h2 id="secHead">All sectors<span class="hint">click to filter industries</span></h2><table class="gtable" id="secTable"></table></section>
+    <section class="card" id="indCard"><h2 id="indHead">All industries</h2><table class="gtable" id="indTable"></table></section>
+  </div>
 </div>
 
 <script>
 const METRICS = [["near_52w_2","2%"],["near_52w_5","5%"],["near_52w_10","10%"],["near_52w_15","15%"],["near_52w_20","20%"]];
-const state = { metric: "near_52w_10", date: null, data: null, sort: { key: "change", dir: -1 }, open: new Set(), openStocks: new Set() };
+const state = { metric: "near_52w_10", date: null, data: null, sort: { sector: { key: "value", dir: -1 }, industry: { key: "value", dir: -1 } }, sector: null, openStocks: new Set() };
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 const fmt = v => v == null ? "—" : v.toFixed(1) + "%";
@@ -204,6 +215,15 @@ function nearCount(kind, name) {
   const cap = "₹" + (state.data.min_mcap_cr ?? 1000).toLocaleString("en-IN") + " cr";
   return ` · <b class="nc" title="Stocks within ${state.data.max_dist_from_high ?? 10}% of their 52W high with market cap ≥ ${cap}">${n} near high</b>`;
 }
+// One sector/industry row, as in the cards: rank · name (stocks · near high) · current % · change.
+function groupRow(r, i, extra = "") {
+  return `<div class="mover${extra}">
+      <span class="rank">${i + 1}</span>
+      <span><span class="name"><i class="caret">▸</i>${esc(r.name)}</span><br><span class="meta">${r.stock_count} stocks${nearCount(r.sector ? "industry" : "sector", r.name)}</span></span>
+      <span class="vals">${fmt(r.value)}</span>
+      <span class="delta ${cls(r.change)}">${state.data.prev_date ? fmtD(r.change) : ""}</span>
+    </div>`;
+}
 function item(kind, r, inner) {
   const key = kind + "|" + r.name, open = state.openStocks.has(key);
   return `<div class="item${open ? " open" : ""}" data-key="${esc(key)}">${inner}${open ? stocksPanel(kind, r.name) : ""}</div>`;
@@ -218,13 +238,7 @@ document.addEventListener("click", e => {
 function moverList(el, rows, showSector) {
   if (!state.data.prev_date) { el.innerHTML = `<div class="empty">Needs a previous session to compare.</div>`; return; }
   if (!rows.length) { el.innerHTML = `<div class="empty">Nothing gained since the previous session.</div>`; return; }
-  el.innerHTML = rows.map((r, i) => item(showSector ? "industry" : "sector", r, `
-    <div class="mover">
-      <span class="rank">${i + 1}</span>
-      <span><span class="name"><i class="caret">▸</i>${esc(r.name)}</span><br><span class="meta">${r.stock_count} stocks${nearCount(showSector ? "industry" : "sector", r.name)}</span></span>
-      <span class="vals">${fmt(r.value)}</span>
-      <span class="delta ${cls(r.change)}">${fmtD(r.change)}</span>
-    </div>`)).join("");
+  el.innerHTML = rows.map((r, i) => item(showSector ? "industry" : "sector", r, groupRow(r, i))).join("");
 }
 
 const topByLevel = rows => rows
@@ -234,13 +248,7 @@ const topByLevel = rows => rows
 function leaderList(el, rows, showSector) {
   const top = topByLevel(rows);
   if (!top.length) { el.innerHTML = `<div class="empty">No data.</div>`; return; }
-  el.innerHTML = top.map((r, i) => item(showSector ? "industry" : "sector", r, `
-    <div class="mover">
-      <span class="rank">${i + 1}</span>
-      <span><span class="name"><i class="caret">▸</i>${esc(r.name)}</span><br><span class="meta">${r.stock_count} stocks${nearCount(showSector ? "industry" : "sector", r.name)}</span></span>
-      <span class="vals">${fmt(r.value)}</span>
-      <span class="delta ${cls(r.change)}">${state.data.prev_date ? fmtD(r.change) : ""}</span>
-    </div>`)).join("");
+  el.innerHTML = top.map((r, i) => item(showSector ? "industry" : "sector", r, groupRow(r, i))).join("");
 }
 
 function renderLeaders() {
@@ -249,28 +257,51 @@ function renderLeaders() {
   leaderList($("topIndustries"), state.data.industries, true);
 }
 
-function renderTable() {
-  const { sectors, industries, prev_date } = state.data;
-  const { key, dir } = state.sort;
-  const cmp = (a, b) => {
-    const x = a[key], y = b[key];
-    if (typeof x === "string") return dir * x.localeCompare(y);
-    return dir * ((x ?? -1e9) - (y ?? -1e9));
-  };
-  const cols = [["name", "Sector / industry"], ["stock_count", "Stocks"], ["prev", prev_date ? `Prev (${prev_date})` : "Prev"], ["value", `Now (${state.data.date})`], ["change", "Change"]];
-  const head = `<thead><tr>${cols.map(([k, l]) => `<th data-k="${k}">${esc(l)}${k === key ? (dir > 0 ? " ↑" : " ↓") : ""}</th>`).join("")}</tr></thead>`;
-  const row = (r, isInd) => `<tr class="${isInd ? "ind" : "sector" + (state.open.has(r.name) ? " open" : "")}" data-name="${esc(r.name)}">
-      <td>${isInd ? "" : `<span class="caret">▸</span>`}${esc(r.name)}</td><td>${r.stock_count ?? "—"}</td>
-      <td>${fmt(r.prev)}</td><td>${fmt(r.value)}</td><td class="delta ${cls(r.change)}">${fmtD(r.change)}</td></tr>`;
-  const body = [...sectors].sort(cmp).map(s => row(s, false) +
-    (state.open.has(s.name) ? industries.filter(i => i.sector === s.name).sort(cmp).map(i => row(i, true)).join("") : "")).join("");
-  $("tbl").innerHTML = head + `<tbody>${body}</tbody>`;
+// All sectors / All industries tables. Current % and Delta headers sort (click again to flip).
+const COLS = [["value", "Current %"], ["change", "Delta"]];
+function groupTable(kind, rows) {
+  const { key, dir } = state.sort[kind];
+  const sorted = [...rows].sort((a, b) => dir * (((a[key] ?? -1e9) - (b[key] ?? -1e9)) || ((a.value ?? 0) - (b.value ?? 0))));
+  const head = `<thead><tr><th></th><th>${kind === "sector" ? "Sector" : "Industry"}</th>` +
+    COLS.map(([k, l]) => `<th class="sortable${k === key ? " sorted" : ""}" data-kind="${kind}" data-sort="${k}" aria-sort="${k === key ? (dir > 0 ? "ascending" : "descending") : "none"}">${l}${k === key ? (dir > 0 ? " ↑" : " ↓") : ""}</th>`).join("") + `</tr></thead>`;
+  const body = sorted.map((r, i) => {
+    const sk = "table|" + r.name, open = kind === "industry" && state.openStocks.has(sk);
+    const attrs = kind === "sector" ? `data-sector="${esc(r.name)}" class="row${r.name === state.sector ? " sel" : ""}"`
+                                    : `data-key="${esc(sk)}" class="row${open ? " open" : ""}"`;
+    return `<tr ${attrs}><td class="rank">${i + 1}</td>
+      <td class="name"><span class="name">${kind === "industry" ? `<i class="caret">▸</i>` : ""}${esc(r.name)}</span><br><span class="meta">${r.stock_count} stocks${nearCount(kind, r.name)}</span></td>
+      <td class="num">${fmt(r.value)}</td>
+      <td class="delta ${cls(r.change)}">${state.data.prev_date ? fmtD(r.change) : "—"}</td></tr>` +
+      (open ? `<tr><td class="panel" colspan="4">${stocksPanel("industry", r.name)}</td></tr>` : "");
+  }).join("");
+  return head + `<tbody>${body}</tbody>`;
 }
-$("tbl").addEventListener("click", e => {
-  const th = e.target.closest("th");
-  if (th) { const k = th.dataset.k; state.sort = { key: k, dir: state.sort.key === k ? -state.sort.dir : (k === "name" ? 1 : -1) }; return renderTable(); }
-  const tr = e.target.closest("tr.sector");
-  if (tr) { const n = tr.dataset.name; state.open.has(n) ? state.open.delete(n) : state.open.add(n); renderTable(); }
+function renderTable() {
+  const { sectors, industries } = state.data;
+  if (state.sector && !sectors.some(s => s.name === state.sector)) state.sector = null;
+  $("secHead").firstChild.textContent = `All sectors (${sectors.length})`;
+  $("secTable").innerHTML = groupTable("sector", sectors);
+  const inds = state.sector ? industries.filter(r => r.sector === state.sector) : industries;
+  $("indHead").innerHTML = state.sector
+    ? `Industries in ${esc(state.sector)} (${inds.length})<button class="chip hint" id="clearSector" title="Show all industries">× show all</button>`
+    : `All industries (${inds.length})<span class="hint">click for stocks</span>`;
+  $("indTable").innerHTML = groupTable("industry", inds);
+}
+document.addEventListener("click", e => {
+  const th = e.target.closest("th.sortable");
+  if (th) {
+    const s = state.sort[th.dataset.kind], k = th.dataset.sort;
+    state.sort[th.dataset.kind] = { key: k, dir: s.key === k ? -s.dir : -1 };
+    return renderTable();
+  }
+  if (e.target.closest("#clearSector")) { state.sector = null; return renderTable(); }
+  const tr = e.target.closest(".gtable tr.row"); if (!tr) return;
+  if (tr.dataset.sector) {  // filter the industries table to this sector (click again to clear)
+    state.sector = state.sector === tr.dataset.sector ? null : tr.dataset.sector; renderTable();
+    if (state.sector && matchMedia("(max-width: 720px)").matches) $("indCard").scrollIntoView({ behavior: "smooth", block: "start" });
+  } else {
+    const k = tr.dataset.key; state.openStocks.has(k) ? state.openStocks.delete(k) : state.openStocks.add(k); renderTable();
+  }
 });
 
 function render() {
@@ -278,7 +309,7 @@ function render() {
   if (!d.date) {
     $("subtitle").textContent = "No data yet.";
     $("notice").innerHTML = `<div class="notice">No snapshots stored yet — ${window.STATIC_SITE ? "data appears after the first scheduled update." : "click <b>Fetch now</b> to record the first session."}</div>`;
-    ["strength", "industryStrength", "topSectors", "topIndustries"].forEach(id => $(id).innerHTML = ""); $("tbl").innerHTML = "";
+    ["strength", "industryStrength", "topSectors", "topIndustries", "secTable", "indTable"].forEach(id => $(id).innerHTML = "");
     return;
   }
   const live = new Set(d.live_dates || []);
