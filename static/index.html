@@ -22,6 +22,9 @@
   }
 }
 * { box-sizing: border-box; }
+/* Reserve the scrollbar's space even when the page is short, so switching Strong/All doesn't shift the width. */
+html { scrollbar-gutter: stable; }
+@supports not (scrollbar-gutter: stable) { html { overflow-y: scroll; } }
 body { margin: 0; background: var(--page); color: var(--ink);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
 .wrap { max-width: 1120px; margin: 0 auto; padding: 28px 16px 64px; }
@@ -37,6 +40,7 @@ button:hover, select:hover { background: var(--hover); }
 .tv button:last-child { border-radius: 0 8px 8px 0; border-left: 0; }
 .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
 .seg button { border: 0; border-radius: 0; padding: 6px 10px; }
+[hidden] { display: none !important; }
 .seg button[aria-pressed="true"] { background: var(--ink); color: var(--surface); }
 .card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 16px 18px; }
 .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
@@ -60,8 +64,12 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
 .stock .num, .stocks .hd span:not(:first-child) { text-align: right; font-variant-numeric: tabular-nums; }
 .rank { color: var(--muted); font-variant-numeric: tabular-nums; }
 .mover .name { font-weight: 550; }
-.mover .meta { color: var(--muted); font-size: 12px; }
-.mover .meta .nc { font-weight: 600; color: var(--ink-2); }
+/* name + (near/total) on one line: long names are cut with "…" (full name on hover), the count always shows */
+.nm { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+.nm .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.nm .nc { flex-shrink: 0; }
+.gtable td.name { width: 100%; max-width: 0; }
+.nc { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .mover .vals { color: var(--ink-2); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .delta { font-weight: 650; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .delta.up { color: var(--up-text); } .delta.down { color: var(--down-text); } .delta.flat { color: var(--muted); }
@@ -74,8 +82,6 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
 .notice { background: var(--surface); border: 1px dashed var(--axis); border-radius: 12px; padding: 12px 16px;
   margin-bottom: 16px; color: var(--ink-2); }
 
-/* leaders: ranked by level (not change) */
-.section-note { color: var(--ink-2); margin: 8px 0 10px; font-size: 13px; }
 
 /* all sectors / all industries tables */
 .gtable { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
@@ -86,16 +92,13 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
 .gtable th:nth-child(-n+2), .gtable td:nth-child(-n+2) { text-align: left; }
 .gtable td.rank { width: 22px; padding-left: 4px; }
 .gtable td.name .name { font-weight: 550; }
-.gtable .meta { color: var(--muted); font-size: 12px; }
-.gtable .meta .nc { font-weight: 600; color: var(--ink-2); }
 .gtable td.num { color: var(--ink-2); white-space: nowrap; }
 .gtable tr.row { cursor: pointer; }
 .gtable tr.row:hover td { background: var(--hover); }
-.gtable tr.sel td { background: var(--mid); }
 .gtable tr.open .caret { transform: rotate(90deg); }
 .gtable td.panel { padding: 0 0 4px; border-top: 0; text-align: left; }
-.chip { font-size: 12px; padding: 2px 8px; border-radius: 999px; }
 @media (max-width: 520px) {
+  .delta .u { display: none; }  /* "+4.7" instead of "+4.7 pts": more room for names */
   .gtable th, .gtable td { padding-left: 3px; padding-right: 3px; }
   .gtable td.rank { width: 16px; padding-left: 0; }
   .gtable td.num, .gtable td.delta { font-size: 13px; }
@@ -115,46 +118,62 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
       <p class="sub" id="subtitle">Loading…</p>
     </div>
     <div class="controls">
+      <div class="seg" id="viewSeg" role="group" aria-label="View">
+        <button data-view="strong" title="Top 5 cards: strongest today and strongest overall">Strong</button><button data-view="all" title="Every sector and industry, sortable">All</button>
+      </div>
       <div class="seg" id="metricSeg" role="group" aria-label="Within % of 52-week high"></div>
-      <select id="dateSel" aria-label="Session"></select>
-      <button id="fetchBtn" title="Fetch the latest data now">Fetch now</button>
       <span class="tv">
-        <button id="tvCopy" title="Copy all listed stocks as a TradingView watchlist, in 4 sections with a sub-section per sector/industry">Copy for TradingView</button><button id="tvDownload" title="Download as a .txt file for TradingView: watchlist menu → Import list…" aria-label="Download TradingView watchlist file">↓ .txt</button>
+        <button id="tvCopy" title="Copy the stocks in this view as a TradingView watchlist. Strong: the 4 cards. All: every sector, with a sub-section per industry.">Copy for TradingView</button><button id="tvDownload" title="Download as a .txt file for TradingView: watchlist menu → Import list…" aria-label="Download TradingView watchlist file">↓ .txt</button>
       </span>
     </div>
   </header>
   <div class="status" id="status"></div>
   <div id="notice"></div>
 
+  <div id="viewStrong">
   <div class="grid2">
     <section class="card"><h2><span class="dot" style="background:var(--up)"></span>Top 5 strong sectors today<span class="hint">click for stocks</span></h2><div id="strength"></div></section>
     <section class="card"><h2><span class="dot" style="background:var(--up)"></span>Top 5 strong industries today<span class="hint">click for stocks</span></h2><div id="industryStrength"></div></section>
   </div>
 
-  <p class="section-note" id="leadersNote"></p>
   <div class="grid2">
     <section class="card"><h2>Top 5 strong sectors<span class="hint">click for stocks</span></h2><div id="topSectors"></div></section>
     <section class="card"><h2>Top 5 strong industries<span class="hint">click for stocks</span></h2><div id="topIndustries"></div></section>
   </div>
+  </div>
 
-  <div class="grid2">
-    <section class="card"><h2 id="secHead">All sectors<span class="hint">click to filter industries</span></h2><table class="gtable" id="secTable"></table></section>
-    <section class="card" id="indCard"><h2 id="indHead">All industries</h2><table class="gtable" id="indTable"></table></section>
+  <div class="grid2" id="viewAll" hidden>
+    <section class="card"><h2 id="secHead">All sectors<span class="hint">click for stocks</span></h2><table class="gtable" id="secTable"></table></section>
+    <section class="card"><h2 id="indHead">All industries<span class="hint">click for stocks</span></h2><table class="gtable" id="indTable"></table></section>
   </div>
 </div>
 
 <script>
-const METRICS = [["near_52w_2","2%"],["near_52w_5","5%"],["near_52w_10","10%"],["near_52w_15","15%"],["near_52w_20","20%"]];
-const state = { metric: "near_52w_10", date: null, data: null, sort: { sector: { key: "value", dir: -1 }, industry: { key: "value", dir: -1 } }, sector: null, openStocks: new Set() };
+const METRICS = [["near_52w_5","5%"],["near_52w_10","10%"],["near_52w_15","15%"],["near_52w_20","20%"]];
+const state = { view: "strong", metric: "near_52w_10", date: null, data: null, sort: { sector: { key: "value", dir: -1 }, industry: { key: "value", dir: -1 } }, openStocks: new Set() };
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 const fmt = v => v == null ? "—" : v.toFixed(1) + "%";
-const fmtD = v => v == null ? "—" : (v > 0 ? "▲ +" : v < 0 ? "▼ " : "") + v.toFixed(1) + " pts";
+const fmtD = v => v == null ? "—" : (v > 0 ? "▲ +" : v < 0 ? "▼ " : "") + v.toFixed(1) + `<span class="u"> pts</span>`;  // HTML
 const cls = v => v == null || v === 0 ? "flat" : v > 0 ? "up" : "down";
 const fmtDate = d => d ? new Date(d + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" }) : "";
 const pctLabel = () => METRICS.find(m => m[0] === state.metric)[1];
 
 try { const m = localStorage.getItem("metric"); if (METRICS.some(x => x[0] === m)) state.metric = m; } catch (e) {}
+
+// Strong (top 5 cards) | All (sector and industry tables); remembered like the % choice.
+try { const v = localStorage.getItem("view"); if (v === "strong" || v === "all") state.view = v; } catch (e) {}
+function renderView() {
+  document.querySelectorAll("#viewSeg button").forEach(b => b.setAttribute("aria-pressed", b.dataset.view === state.view));
+  $("viewStrong").hidden = state.view !== "strong";
+  $("viewAll").hidden = state.view !== "all";
+}
+$("viewSeg").addEventListener("click", e => {
+  const v = e.target.dataset.view; if (!v) return;
+  state.view = v; try { localStorage.setItem("view", v); } catch (e) {}
+  renderView();
+});
+renderView();
 
 function renderMetricSeg() {
   $("metricSeg").innerHTML = METRICS.map(([k, l]) =>
@@ -164,19 +183,6 @@ $("metricSeg").addEventListener("click", e => {
   const k = e.target.dataset.k; if (!k) return;
   state.metric = k; try { localStorage.setItem("metric", k); } catch (e) {}
   renderMetricSeg(); load();
-});
-$("dateSel").addEventListener("change", e => { state.date = e.target.value; load(); });
-$("fetchBtn").addEventListener("click", async () => {
-  $("fetchBtn").disabled = true; $("status").textContent = "Fetching… (takes about a minute)";
-  try {
-    const r = await fetch("/api/snapshot", { method: "POST" }).then(r => r.json());
-    $("status").textContent = r.error ? r.error
-      : !r.stored ? r.reason
-      : r.live ? `Live update for ${fmtDate(r.date)}: ${r.stocks} stocks at current prices (provisional until the end-of-day update).`
-      : `Stored final data for ${fmtDate(r.date)}: ${r.sectors} sectors, ${r.industries} industries, ${r.stocks} stocks.`;
-    state.date = null; await load();
-  } catch (e) { $("status").textContent = "Fetch failed: " + e.message; }
-  $("fetchBtn").disabled = false;
 });
 
 async function load() {
@@ -194,9 +200,12 @@ async function loadStatic() {
   const date = idx.dates.includes(state.date) ? state.date : idx.dates[0];
   const key = date + "@" + idx.generated_at;  // re-download only when the site has been rebuilt
   const f = sessionFiles[key] || (sessionFiles[key] = await getJSON(`data/${date}.json`));
-  return { ...f, ...f.by_metric[state.metric], metric: state.metric, dates: idx.dates, live_dates: idx.live_dates };
+  // The session file lists stocks within the widest threshold; keep those within the selected one.
+  const within = +state.metric.split("_").pop();
+  const keep = groups => Object.fromEntries(Object.entries(groups).map(([g, list]) => [g, list.filter(st => st.dist >= -within)]));
+  return { ...f, ...f.by_metric[state.metric], metric: state.metric, dates: idx.dates, live_dates: idx.live_dates,
+           top_stocks: { sector: keep(f.top_stocks.sector), industry: keep(f.top_stocks.industry) }, max_dist_from_high: within };
 }
-if (window.STATIC_SITE) $("fetchBtn").hidden = true;  // updates come from the scheduled GitHub workflow
 
 // Top 5 stocks closest to their 52-week high, shown when a card row is expanded.
 const r1 = v => v == null ? null : (Math.round(v * 10) / 10 || 0);  // round to 0.1, no "-0.0"
@@ -210,16 +219,16 @@ function stocksPanel(kind, name) {
       ${[st.change_1d, st.change_1w, st.change_1m].map(v => `<span class="num delta ${v == null ? "flat" : cls(r1(v))}">${v == null ? "—" : (r1(v) > 0 ? "+" : "") + r1(v).toFixed(1) + "%"}</span>`).join("")}
     </div>`).join("") + `</div>`;
 }
-function nearCount(kind, name) {
-  const n = ((state.data.top_stocks || {})[kind]?.[name] || []).length;
+function nearCount(kind, r) {  // "(14/42)": stocks near their 52W high / stocks in the group
+  const n = ((state.data.top_stocks || {})[kind]?.[r.name] || []).length;
   const cap = "₹" + (state.data.min_mcap_cr ?? 1000).toLocaleString("en-IN") + " cr";
-  return ` · <b class="nc" title="Stocks within ${state.data.max_dist_from_high ?? 10}% of their 52W high with market cap ≥ ${cap}">${n} near high</b>`;
+  return ` <span class="nc" title="${n} of ${r.stock_count} stocks (market cap ≥ ${cap}) are within ${state.data.max_dist_from_high ?? 10}% of their 52W high">(${n}/${r.stock_count})</span>`;
 }
 // One sector/industry row, as in the cards: rank · name (stocks · near high) · current % · change.
 function groupRow(r, i, extra = "") {
   return `<div class="mover${extra}">
       <span class="rank">${i + 1}</span>
-      <span><span class="name"><i class="caret">▸</i>${esc(r.name)}</span><br><span class="meta">${r.stock_count} stocks${nearCount(r.sector ? "industry" : "sector", r.name)}</span></span>
+      <span class="nm"><span class="name" title="${esc(r.name)}"><i class="caret">▸</i>${esc(r.name)}</span>${nearCount(r.sector ? "industry" : "sector", r)}</span>
       <span class="vals">${fmt(r.value)}</span>
       <span class="delta ${cls(r.change)}">${state.data.prev_date ? fmtD(r.change) : ""}</span>
     </div>`;
@@ -252,40 +261,38 @@ function leaderList(el, rows, showSector) {
 }
 
 function renderLeaders() {
-  $("leadersNote").textContent = `Strongest right now: highest % of stocks within ${pctLabel()} of their 52-week high on ${fmtDate(state.data.date)}`;
   leaderList($("topSectors"), state.data.sectors, false);
   leaderList($("topIndustries"), state.data.industries, true);
 }
 
 // All sectors / All industries tables. Current % and Delta headers sort (click again to flip).
 const COLS = [["value", "Current %"], ["change", "Delta"]];
+function sortRows(kind, rows) {  // the table's current sort (also used for the All-view export order)
+  const { key, dir } = state.sort[kind];
+  return [...rows].sort((a, b) => dir * (((a[key] ?? -1e9) - (b[key] ?? -1e9)) || ((a.value ?? 0) - (b.value ?? 0))));
+}
 function groupTable(kind, rows) {
   const { key, dir } = state.sort[kind];
-  const sorted = [...rows].sort((a, b) => dir * (((a[key] ?? -1e9) - (b[key] ?? -1e9)) || ((a.value ?? 0) - (b.value ?? 0))));
+  const sorted = sortRows(kind, rows);
   const head = `<thead><tr><th></th><th>${kind === "sector" ? "Sector" : "Industry"}</th>` +
     COLS.map(([k, l]) => `<th class="sortable${k === key ? " sorted" : ""}" data-kind="${kind}" data-sort="${k}" aria-sort="${k === key ? (dir > 0 ? "ascending" : "descending") : "none"}">${l}${k === key ? (dir > 0 ? " ↑" : " ↓") : ""}</th>`).join("") + `</tr></thead>`;
   const body = sorted.map((r, i) => {
-    const sk = "table|" + r.name, open = kind === "industry" && state.openStocks.has(sk);
-    const attrs = kind === "sector" ? `data-sector="${esc(r.name)}" class="row${r.name === state.sector ? " sel" : ""}"`
-                                    : `data-key="${esc(sk)}" class="row${open ? " open" : ""}"`;
-    return `<tr ${attrs}><td class="rank">${i + 1}</td>
-      <td class="name"><span class="name">${kind === "industry" ? `<i class="caret">▸</i>` : ""}${esc(r.name)}</span><br><span class="meta">${r.stock_count} stocks${nearCount(kind, r.name)}</span></td>
+    // own key per table: opening a row here doesn't also open the same group in the cards above
+    const sk = `table-${kind}|${r.name}`, open = state.openStocks.has(sk);
+    return `<tr data-key="${esc(sk)}" class="row${open ? " open" : ""}"><td class="rank">${i + 1}</td>
+      <td class="name"><span class="nm"><span class="name" title="${esc(r.name)}"><i class="caret">▸</i>${esc(r.name)}</span>${nearCount(kind, r)}</span></td>
       <td class="num">${fmt(r.value)}</td>
       <td class="delta ${cls(r.change)}">${state.data.prev_date ? fmtD(r.change) : "—"}</td></tr>` +
-      (open ? `<tr><td class="panel" colspan="4">${stocksPanel("industry", r.name)}</td></tr>` : "");
+      (open ? `<tr><td class="panel" colspan="4">${stocksPanel(kind, r.name)}</td></tr>` : "");
   }).join("");
   return head + `<tbody>${body}</tbody>`;
 }
 function renderTable() {
   const { sectors, industries } = state.data;
-  if (state.sector && !sectors.some(s => s.name === state.sector)) state.sector = null;
   $("secHead").firstChild.textContent = `All sectors (${sectors.length})`;
   $("secTable").innerHTML = groupTable("sector", sectors);
-  const inds = state.sector ? industries.filter(r => r.sector === state.sector) : industries;
-  $("indHead").innerHTML = state.sector
-    ? `Industries in ${esc(state.sector)} (${inds.length})<button class="chip hint" id="clearSector" title="Show all industries">× show all</button>`
-    : `All industries (${inds.length})<span class="hint">click for stocks</span>`;
-  $("indTable").innerHTML = groupTable("industry", inds);
+  $("indHead").firstChild.textContent = `All industries (${industries.length})`;
+  $("indTable").innerHTML = groupTable("industry", industries);
 }
 document.addEventListener("click", e => {
   const th = e.target.closest("th.sortable");
@@ -294,30 +301,21 @@ document.addEventListener("click", e => {
     state.sort[th.dataset.kind] = { key: k, dir: s.key === k ? -s.dir : -1 };
     return renderTable();
   }
-  if (e.target.closest("#clearSector")) { state.sector = null; return renderTable(); }
-  const tr = e.target.closest(".gtable tr.row"); if (!tr) return;
-  if (tr.dataset.sector) {  // filter the industries table to this sector (click again to clear)
-    state.sector = state.sector === tr.dataset.sector ? null : tr.dataset.sector; renderTable();
-    if (state.sector && matchMedia("(max-width: 720px)").matches) $("indCard").scrollIntoView({ behavior: "smooth", block: "start" });
-  } else {
-    const k = tr.dataset.key; state.openStocks.has(k) ? state.openStocks.delete(k) : state.openStocks.add(k); renderTable();
-  }
+  const tr = e.target.closest(".gtable tr.row"); if (!tr) return;  // a row: show/hide its stocks
+  const k = tr.dataset.key; state.openStocks.has(k) ? state.openStocks.delete(k) : state.openStocks.add(k); renderTable();
 });
 
 function render() {
   const d = state.data;
   if (!d.date) {
     $("subtitle").textContent = "No data yet.";
-    $("notice").innerHTML = `<div class="notice">No snapshots stored yet — ${window.STATIC_SITE ? "data appears after the first scheduled update." : "click <b>Fetch now</b> to record the first session."}</div>`;
+    $("notice").innerHTML = `<div class="notice">No snapshots stored yet — data appears after the first scheduled update.</div>`;
     ["strength", "industryStrength", "topSectors", "topIndustries", "secTable", "indTable"].forEach(id => $(id).innerHTML = "");
     return;
   }
-  const live = new Set(d.live_dates || []);
-  $("dateSel").innerHTML = d.dates.map(x => `<option value="${x}" ${x === d.date ? "selected" : ""}>${fmtDate(x)}${live.has(x) ? " · live" : ""}</option>`).join("");
   const asOf = d.fetched_at ? d.fetched_at.slice(11, 16) : "";
   $("subtitle").innerHTML = (d.live ? `<span class="live" title="Computed from live prices: previous close × today's move, against the 52-week high. Final numbers replace it after the end-of-day update.">LIVE ${asOf}</span>` : "") +
-    esc(`% of stocks within ${pctLabel()} of 52-week high · ${fmtDate(d.date)}` + (d.prev_date ? ` vs ${fmtDate(d.prev_date)}` : "") +
-        (d.live ? " · provisional until the end-of-day update" : ""));
+    esc(`% of stocks within ${pctLabel()} of 52-week high · ${fmtDate(d.date)}`);
   $("notice").innerHTML = d.prev_date ? "" :
     `<div class="notice">Only one session stored so far. Day-over-day changes appear after the next session is recorded.</div>`;
   moverList($("strength"), d.strength);
@@ -332,7 +330,13 @@ const tvSymbol = st => `${st.exchange || "NSE"}:${st.symbol.replace(/[^A-Za-z0-9
 const tvName = n => n.replace(/[,#]/g, "").replace(/\s+/g, " ").trim();
 function buildTradingViewList() {
   const d = state.data, ts = d.top_stocks || {};
-  const cards = [
+  // Strong view: the four cards. All view: every sector (header) followed by its industries' stocks —
+  // a sector's stocks are its industries' stocks, so this covers both without listing anything twice.
+  const cards = state.view === "all"
+    ? sortRows("sector", d.sectors || []).map(sec => [
+        `${tvName(sec.name).toUpperCase()} (${(ts.sector?.[sec.name] || []).length})`, "industry",
+        sortRows("industry", (d.industries || []).filter(i => i.sector === sec.name))])
+    : [
     ["STRONG SECTORS TODAY", "sector", d.strength || []],
     ["STRONG INDUSTRIES TODAY", "industry", d.industry_strength || []],
     ["STRONG SECTORS", "sector", topByLevel(d.sectors || [])],
@@ -341,7 +345,7 @@ function buildTradingViewList() {
   const seen = new Set(), parts = [];
   let count = 0, sections = 0;
   for (const [title, kind, groups] of cards) {
-    if (!groups.length) continue;
+    if (!groups.some(g => (ts[kind]?.[g.name] || []).length)) continue;  // skip headers with no stocks under them
     parts.push("###" + title); sections++;
     for (const g of groups) {
       const all = (ts[kind]?.[g.name] || []).map(tvSymbol);
@@ -374,7 +378,7 @@ $("tvDownload").addEventListener("click", () => {
   const { text, count } = buildTradingViewList();
   const a = Object.assign(document.createElement("a"), {
     href: URL.createObjectURL(new Blob([text], { type: "text/plain" })),
-    download: `Market Analysis ${state.data.date}.txt`,
+    download: `Market Analysis ${state.data.date} ${state.view === "all" ? "All" : "Strong"} within ${pctLabel()}.txt`,
   });
   a.click(); URL.revokeObjectURL(a.href);
   $("status").textContent = `Downloaded ${count} symbols. In TradingView: watchlist name ▾ → Import list… → choose this file.`;
@@ -383,7 +387,7 @@ $("tvDownload").addEventListener("click", () => {
 renderMetricSeg();
 load().catch(e => { $("subtitle").textContent = "Could not reach the server: " + e.message; });
 // While a live session is on screen, pick up the server's periodic live refreshes.
-setInterval(() => { if (!state.date && state.data?.live && !$("fetchBtn").disabled) load().catch(() => {}); }, 120000);
+setInterval(() => { if (state.data?.live) load().catch(() => {}); }, 120000);
 </script>
 </body>
 </html>

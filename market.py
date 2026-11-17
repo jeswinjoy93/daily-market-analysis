@@ -30,7 +30,6 @@ LISTING_URL = ("https://trendvue.in/api/screener-data/stocks"
                "?fields=market_cap_basic,close,price_52_week_high,pct_from_52w_high,1D,1W,1M")
 MIN_MCAP_CR = 1000  # universe: only stocks with market cap >= this (₹ crore), for both the % and the stock lists
 MIN_GROUP_STOCKS = 3  # sectors/industries need at least this many stocks in the universe to be ranked
-MAX_DIST_FROM_HIGH = 10  # stock lists / TradingView export: stocks within this % of their 52-week high, closest first
 # A liquid stock's daily bars (the last one is live during market hours) tell us which session each source reflects.
 PROBE_SYMBOL = "RELIANCE"
 PROBE_URL = f"https://trendvue.in/api/eod/{PROBE_SYMBOL}?days=3"
@@ -247,7 +246,11 @@ def take_snapshot(con=None):
             "sectors": len(segments["sector"]), "industries": len(segments["industry"]), "stocks": len(stocks)}
 
 
-def top_stocks(con, snap_date, n=None, min_mcap_cr=MIN_MCAP_CR, max_dist=MAX_DIST_FROM_HIGH):
+def _within(metric):  # "near_52w_10" -> 10
+    return int(metric.rsplit("_", 1)[1])
+
+
+def top_stocks(con, snap_date, max_dist, n=None, min_mcap_cr=MIN_MCAP_CR):
     """Per sector and per industry: stocks closest to their 52-week high (all, or the first n),
     among companies with market cap >= min_mcap_cr (unknown market cap is excluded)
     that are no more than max_dist % below their 52-week high."""
@@ -285,7 +288,7 @@ def _values(con, snap_date, kind, metric, min_mcap_cr=MIN_MCAP_CR):
     """% of stocks within X% of their 52W high, per sector or industry, computed from stock-level data
     over the universe of stocks with market cap >= min_mcap_cr. (Without the cap filter this
     reproduces Trendvue's own near_52w_X numbers exactly.) stock_count = size of that universe."""
-    within = int(metric.rsplit("_", 1)[1])
+    within = _within(metric)
     if kind == "sector":
         group, cols = "sector", "sector AS name, NULL AS sector"
     else:
@@ -345,10 +348,11 @@ def compare(con, snap_date=None, metric=DEFAULT_METRIC, top_n=5):
         "weakness": sorted([s for s in changed if s["change"] < 0], key=lambda s: s["change"])[:top_n],
         "sectors": sectors,
         "industries": industries,
-        "top_stocks": top_stocks(con, snap_date),
+        # Stock lists follow the selected threshold, so each list's length = the count behind its %.
+        "top_stocks": top_stocks(con, snap_date, _within(metric)),
         "min_group_stocks": MIN_GROUP_STOCKS,
         "min_mcap_cr": MIN_MCAP_CR,  # applies to the sector/industry % and to the stock lists
-        "max_dist_from_high": MAX_DIST_FROM_HIGH,
+        "max_dist_from_high": _within(metric),
     }
 
 
@@ -395,6 +399,8 @@ def export_site(con, out_dir):
         first = by_metric[METRICS[0]]
         doc = {k: v for k, v in first.items() if k not in per_metric + ("weakness", "metric", "dates", "live_dates")}
         doc["by_metric"] = {m: {k: r[k] for k in per_metric} for m, r in by_metric.items()}
+        doc["top_stocks"] = top_stocks(con, d, max(_within(m) for m in METRICS))  # the page filters to the selected %
+        doc.pop("max_dist_from_high", None)
         (data_dir / f"{d}.json").write_text(json.dumps(doc, separators=(",", ":")))
     (data_dir / "index.json").write_text(json.dumps({
         "dates": dates, "live_dates": live_dates(con), "generated_at": datetime.now().isoformat(timespec="seconds")}))
