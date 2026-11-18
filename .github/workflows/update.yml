@@ -5,7 +5,7 @@
 # hours, then after its close until the day's final data is in), saves the databases back to the release,
 # and rebuilds the static site.
 #
-# Runs keep themselves going: the last job waits until the next due time (every 15 min while either market
+# Runs keep themselves going: the last job waits until the next due time (every 5 min while either market
 # is open or finishing its day, otherwise the next open) and then starts the next run. GitHub's cron
 # schedule is unreliable (runs can be delayed for hours or dropped), so it is only a backup that restarts
 # the chain if it ever stops. Only one waiting job exists at a time: a newer one cancels the older.

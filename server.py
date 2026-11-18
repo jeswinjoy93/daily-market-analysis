@@ -19,7 +19,7 @@ import market
 
 PORT = int(os.environ.get("PORT", 8050))
 STATIC = market.BASE / "static"
-LIVE_REFRESH_MIN = int(os.environ.get("LIVE_REFRESH_MIN", 15))  # India: ~60 Trendvue requests (~1 min); US: 1 request
+LIVE_REFRESH_MIN = int(os.environ.get("LIVE_REFRESH_MIN", market.REFRESH_MIN))  # India: ~60 Trendvue requests (~1 min); US: 1 request
 FETCH_LOCK = threading.Lock()  # one fetch at a time (manual vs the automatic refresh)
 
 

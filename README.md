@@ -21,8 +21,8 @@ Getting data in:
 
 - To fetch right away: `python3 market.py snapshot` (India, about a minute) or `python3 market.py snapshot us` (US, a second or two);
   or `curl -X POST "localhost:8050/api/snapshot?market=us"` while the server runs.
-- While the server is running, it fetches each market on its own weekdays: live data every 15 minutes during market hours
-  (India 09:15–15:50 IST, US 09:30–16:05 New York time; `LIVE_REFRESH_MIN=5 python3 server.py` to change), then every 30 minutes
+- While the server is running, it fetches each market on its own weekdays: live data every 5 minutes during market hours
+  (India 09:15–15:50 IST, US 09:30–16:05 New York time; `LIVE_REFRESH_MIN=15 python3 server.py` to change), then every 30 minutes
   after the close (India from 17:00 IST, US from 16:20 New York time) until that day's final data is stored.
   The page reloads a live session every 2 minutes.
 - To record even when the server isn't running, run `./install_schedule.sh`. It installs a launchd job for weekdays at 17:30 and 21:00, logging to `data/snapshot.log`.
@@ -38,7 +38,7 @@ The workflow [.github/workflows/update.yml](.github/workflows/update.yml) runs t
 for free, as a static site on GitHub Pages:
 
 - **Schedule:** runs keep themselves going. Each run ends with a job that waits until the next update is due
-  (`market.py next-wait in,us`: every 15 minutes while either market is open or past its close on a weekday, otherwise the
+  (`market.py next-wait in,us`: every 5 minutes while either market is open or past its close on a weekday, otherwise the
   next open) and then starts the next run. Each run runs `market.py auto in,us`, which fetches each market only when due, using
   the same rule as the local server: every run during that market's hours, then after its close until the day's final data is
   stored. A run where nothing is due takes a few seconds.

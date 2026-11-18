@@ -37,6 +37,8 @@ MIN_GROUP_STOCKS = 3  # sectors/industries need at least this many stocks in the
 # A liquid stock's daily bars (the last one is live during market hours) tell us which session each source reflects.
 PROBE_SYMBOL = "RELIANCE"
 PROBE_URL = f"https://trendvue.in/api/eod/{PROBE_SYMBOL}?days=5"
+REFRESH_MIN = 5  # minutes between live updates (GitHub workflow and local server)
+LIVE_PROBE_TOLERANCE = 1.0  # % points between the live 1D and today's still-forming bar (refreshed on separate cycles)
 
 # Per-market settings. Times are the market's local time. min_mcap is in the unit stored in
 # stock_values.market_cap_cr: ₹ crore for India, US$ million for the US.
@@ -177,8 +179,14 @@ def _sessions(listing, lists_1d):
     agree = sum(abs(a - b) <= 0.05 for a, b in both) / max(len(both), 1)
     if listing_date and listing_date == lists_date and agree >= 0.9:
         return listing_date, False, None
-    if listing_date and lists_date and dates.index(lists_date) == dates.index(listing_date) + 1 and agree < 0.9:
-        return lists_date, True, listing_date
+    # Live: the lists have moved on to the session after the listing's. During market hours that session's bar is
+    # itself in progress and its close refreshes on a different cycle from the lists' 1D, so the two drift apart by
+    # more than the exact-match tolerance (often on flat days); only require them to roughly agree.
+    nxt = dates.index(listing_date) + 1 if listing_date else None
+    live_1d = lists_1d.get(PROBE_SYMBOL)
+    if (nxt is not None and nxt < len(moves) and agree < 0.9
+            and (live_1d is None or abs(live_1d - moves[nxt][1]) <= LIVE_PROBE_TOLERANCE)):
+        return dates[nxt], True, listing_date
     raise RuntimeError("The data source is mid-update (its feeds disagree on the session); try again in a few minutes")
 
 
@@ -424,9 +432,9 @@ def snapshot_due(con, now=None, market="in"):
     return False
 
 
-def next_wait_seconds(markets=("in",), now=None, step_min=15, cap=5 * 3600 + 45 * 60):
+def next_wait_seconds(markets=("in",), now=None, step_min=REFRESH_MIN, cap=5 * 3600 + 45 * 60):
     """Seconds until the next update is due for any of `markets`, for the self-scheduling GitHub workflow:
-    the next 15-minute slot during a market's weekday hours or after its close (until midnight, its time),
+    the next REFRESH_MIN-minute slot during a market's weekday hours or after its close (until midnight, its time),
     else the next market open. Capped below GitHub's 6-hour job limit; a capped wait just starts a run that
     finds nothing due and waits again."""
     now = (now or datetime.now().astimezone()).astimezone(ZoneInfo("UTC"))
