@@ -1,11 +1,12 @@
-"""Fetch Trendvue sector/industry breadth (live during market hours), store snapshots in SQLite, and compare days.
+"""Sector/industry breadth for India (Trendvue) and the US (TradingView screener, see us.py): fetch (live during
+market hours), store snapshots in SQLite (one database per market), and compare days.
 
-Usage:
-    python3 market.py snapshot      # fetch now: live (provisional) during market hours, final after Trendvue's EOD update
-    python3 market.py auto          # fetch only if due (market hours, or evening until the day's final data is in)
-    python3 market.py compare       # print latest vs previous in the terminal
-    python3 market.py export DIR    # write the dashboard as a static site (index.html + data/*.json)
-    python3 market.py next-wait     # seconds until the next update is due (used by the GitHub workflow)
+Usage (MARKET = in | us, default in; MARKETS = comma-separated, e.g. in,us):
+    python3 market.py snapshot [MARKETS]      # fetch now: live (provisional) during market hours, final after the close
+    python3 market.py auto [MARKETS]          # fetch each market only if due (market hours, or after the close until final)
+    python3 market.py compare [METRIC] [MARKET]   # print latest vs previous in the terminal
+    python3 market.py export DIR [MARKETS]    # static site (index.html + data/<market>/*.json); default: markets with data
+    python3 market.py next-wait [MARKETS]     # seconds until the next update is due (used by the GitHub workflow)
 """
 import hashlib
 import json
@@ -17,8 +18,10 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from contextlib import closing
 from datetime import datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 BASE = Path(__file__).resolve().parent
 DB_PATH = Path(os.environ.get("MARKET_DB", BASE / "data" / "market.db"))
@@ -35,9 +38,26 @@ MIN_GROUP_STOCKS = 3  # sectors/industries need at least this many stocks in the
 PROBE_SYMBOL = "RELIANCE"
 PROBE_URL = f"https://trendvue.in/api/eod/{PROBE_SYMBOL}?days=5"
 
-# Automatic fetch schedule, local time (IST; NSE trades 09:15-15:30).
-MARKET_HOURS = ((9, 15), (15, 50))  # live refreshes; the last one after 15:30 records the closing prices
-AUTO_AFTER_HOUR = 17  # from then on, fetch until the day's final end-of-day data is stored
+# Per-market settings. Times are the market's local time. min_mcap is in the unit stored in
+# stock_values.market_cap_cr: ₹ crore for India, US$ million for the US.
+MARKETS = {
+    "in": {"name": "India", "db": DB_PATH, "tz": "Asia/Kolkata",
+           "hours": ((9, 15), (15, 50)),   # live refreshes (NSE 09:15-15:30); the last one records the closing prices
+           "final_after": (17, 0),         # then fetch until the day's final end-of-day data is stored
+           "min_mcap": MIN_MCAP_CR, "mcap_label": "₹1,000 cr"},
+    "us": {"name": "US", "db": Path(os.environ.get("MARKET_DB_US", BASE / "data" / "market_us.db")), "tz": "America/New_York",
+           "hours": ((9, 30), (16, 5)),    # NYSE/NASDAQ 09:30-16:00 ET; TradingView's free data is 15 min delayed
+           "final_after": (16, 20),        # closing prices are in by then
+           "min_mcap": 1000, "mcap_label": "$1B"},
+}
+MARKET_HOURS = MARKETS["in"]["hours"]  # India (kept for older callers)
+AUTO_AFTER_HOUR = MARKETS["in"]["final_after"][0]
+
+
+def market_now(market, now=None):
+    """`now` (aware, or naive = this machine's local time) in the market's own timezone."""
+    tz = ZoneInfo(MARKETS[market]["tz"])
+    return (now or datetime.now().astimezone()).astimezone(tz)
 
 # "% of stocks within N% of their 52-week high" — the metric on the Trendvue page.
 METRICS = ["near_52w_2", "near_52w_5", "near_52w_10", "near_52w_15", "near_52w_20"]
@@ -80,9 +100,10 @@ CREATE TABLE IF NOT EXISTS stock_values (
 """
 
 
-def connect():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    con = sqlite3.connect(DB_PATH)
+def connect(market="in"):
+    path = MARKETS[market]["db"]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(path)
     con.row_factory = sqlite3.Row
     con.execute("PRAGMA foreign_keys = ON")
     con.executescript(SCHEMA)
@@ -100,9 +121,12 @@ def connect():
 REQUEST_GAP = 1.0  # seconds between stock-list calls; Trendvue allows 120 requests/min per IP (shared with your browser)
 
 
-def fetch_json(url, retries=4):
-    """GET JSON, waiting out HTTP 429 rate limits (Retry-After) before retrying."""
-    req = urllib.request.Request(url, headers={"User-Agent": "daily-market-analysis/1.0", "Accept": "application/json"})
+def fetch_json(url, retries=4, body=None):
+    """GET JSON (or POST `body` as JSON), waiting out HTTP 429 rate limits (Retry-After) before retrying."""
+    headers = {"User-Agent": "daily-market-analysis/1.0", "Accept": "application/json"}
+    if body is not None:
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, headers=headers, data=None if body is None else json.dumps(body).encode())
     for attempt in range(retries + 1):
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
@@ -326,18 +350,20 @@ def _diff(cur, prev):
     return out
 
 
-def compare(con, snap_date=None, metric=DEFAULT_METRIC, top_n=5):
+def compare(con, snap_date=None, metric=DEFAULT_METRIC, top_n=5, market="in"):
+    cfg = MARKETS[market]
     if metric not in METRICS:
         raise ValueError(f"metric must be one of {METRICS}")
     dates = list_dates(con)
     if not dates:
-        return {"date": None, "prev_date": None, "dates": [], "metric": metric}
+        return {"date": None, "prev_date": None, "dates": [], "metric": metric, "market": market, "market_name": cfg["name"]}
     snap_date = snap_date if snap_date in dates else dates[0]
     older = [d for d in dates if d < snap_date]
     prev_date = older[0] if older else None
 
     def side(kind):
-        return _diff(_values(con, snap_date, kind, metric), _values(con, prev_date, kind, metric) if prev_date else {})
+        return _diff(_values(con, snap_date, kind, metric, cfg["min_mcap"]),
+                     _values(con, prev_date, kind, metric, cfg["min_mcap"]) if prev_date else {})
 
     sectors, industries = side("sector"), side("industry")
     def rankable(rows):
@@ -359,9 +385,11 @@ def compare(con, snap_date=None, metric=DEFAULT_METRIC, top_n=5):
         "sectors": sectors,
         "industries": industries,
         # Stock lists follow the selected threshold, so each list's length = the count behind its %.
-        "top_stocks": top_stocks(con, snap_date, _within(metric)),
+        "top_stocks": top_stocks(con, snap_date, _within(metric), min_mcap_cr=cfg["min_mcap"]),
         "min_group_stocks": MIN_GROUP_STOCKS,
-        "min_mcap_cr": MIN_MCAP_CR,  # applies to the sector/industry % and to the stock lists
+        "market": market,
+        "market_name": cfg["name"],
+        "mcap_label": cfg["mcap_label"],  # universe: applies to the sector/industry % and to the stock lists
         "max_dist_from_high": _within(metric),
     }
 
@@ -379,59 +407,97 @@ def _print_compare(res):
             print("  (none)")
 
 
-def in_market_hours(now):
-    return now.weekday() < 5 and MARKET_HOURS[0] <= (now.hour, now.minute) <= MARKET_HOURS[1]
+def in_market_hours(now=None, market="in"):
+    t = market_now(market, now)
+    return t.weekday() < 5 and MARKETS[market]["hours"][0] <= (t.hour, t.minute) <= MARKETS[market]["hours"][1]
 
 
-def snapshot_due(con, now=None):
-    """Whether an automatic fetch should run now: every time during market hours, and on weekday
-    evenings until that day's final (non-provisional) data is stored."""
-    now = now or datetime.now()
-    if in_market_hours(now):
+def snapshot_due(con, now=None, market="in"):
+    """Whether an automatic fetch should run now: every time during market hours, and on weekdays after
+    the close (final_after) until that day's final (non-provisional) data is stored."""
+    t = market_now(market, now)
+    if in_market_hours(t, market):
         return True
-    if now.weekday() < 5 and now.hour >= AUTO_AFTER_HOUR:
-        row = con.execute("SELECT provisional FROM snapshots WHERE snap_date = ?", (now.strftime("%Y-%m-%d"),)).fetchone()
+    if t.weekday() < 5 and (t.hour, t.minute) >= MARKETS[market]["final_after"]:
+        row = con.execute("SELECT provisional FROM snapshots WHERE snap_date = ?", (t.strftime("%Y-%m-%d"),)).fetchone()
         return not row or bool(row["provisional"])
     return False
 
 
-def next_wait_seconds(now=None, step_min=15, cap=5 * 3600 + 45 * 60):
-    """Seconds until the next update is due, for the self-scheduling GitHub workflow: the next 15-minute slot
-    during weekday market hours or weekday evenings (from AUTO_AFTER_HOUR), else the next market open.
-    Capped below GitHub's 6-hour job limit; a capped wait just starts a run that finds nothing due and waits again."""
-    now = now or datetime.now()
+def next_wait_seconds(markets=("in",), now=None, step_min=15, cap=5 * 3600 + 45 * 60):
+    """Seconds until the next update is due for any of `markets`, for the self-scheduling GitHub workflow:
+    the next 15-minute slot during a market's weekday hours or after its close (until midnight, its time),
+    else the next market open. Capped below GitHub's 6-hour job limit; a capped wait just starts a run that
+    finds nothing due and waits again."""
+    now = (now or datetime.now().astimezone()).astimezone(ZoneInfo("UTC"))
     def active(t):
-        return t.weekday() < 5 and (MARKET_HOURS[0] <= (t.hour, t.minute) <= MARKET_HOURS[1] or t.hour >= AUTO_AFTER_HOUR)
+        for m in markets:
+            lt, cfg = market_now(m, t), MARKETS[m]
+            if lt.weekday() < 5 and (cfg["hours"][0] <= (lt.hour, lt.minute) <= cfg["hours"][1]
+                                     or (lt.hour, lt.minute) >= cfg["final_after"]):
+                return True
+        return False
     t = (now + timedelta(minutes=step_min - now.minute % step_min)).replace(second=0, microsecond=0)
     while not active(t):
         t += timedelta(minutes=step_min)
     return min(int((t - now).total_seconds()) + 60, cap)  # +1 min: start just after the slot
 
 
-def export_site(con, out_dir):
-    """Write the dashboard as a static site: index.html plus data/index.json (sessions) and
-    data/<date>.json per session, holding every threshold's numbers, so no server is needed."""
-    out, data_dir = Path(out_dir), Path(out_dir) / "data"
-    if data_dir.exists():
-        shutil.rmtree(data_dir)
-    data_dir.mkdir(parents=True)
-    dates = list_dates(con)
+def take_market_snapshot(market):
+    con = connect(market)
+    try:
+        if market == "us":
+            import us
+            return us.take_snapshot(con)
+        return take_snapshot(con)
+    finally:
+        con.close()
+
+
+def markets_with_data():
+    out = []
+    for m, cfg in MARKETS.items():
+        if cfg["db"].exists():
+            con = connect(m)
+            if list_dates(con):
+                out.append(m)
+            con.close()
+    return out
+
+
+def export_site(out_dir, markets):
+    """Write the dashboard as a static site: index.html, data/markets.json, and per market
+    data/<market>/index.json (sessions) plus data/<market>/<date>.json per session, holding every
+    threshold's numbers, so no server is needed."""
+    out, data_root = Path(out_dir), Path(out_dir) / "data"
+    if data_root.exists():
+        shutil.rmtree(data_root)
     per_metric = ("strength", "industry_strength", "sectors", "industries")
-    for d in dates:
-        by_metric = {m: compare(con, d, m) for m in METRICS}
-        first = by_metric[METRICS[0]]
-        doc = {k: v for k, v in first.items() if k not in per_metric + ("weakness", "metric", "dates", "live_dates")}
-        doc["by_metric"] = {m: {k: r[k] for k in per_metric} for m, r in by_metric.items()}
-        doc["top_stocks"] = top_stocks(con, d, max(_within(m) for m in METRICS))  # the page filters to the selected %
-        doc.pop("max_dist_from_high", None)
-        (data_dir / f"{d}.json").write_text(json.dumps(doc, separators=(",", ":")))
-    (data_dir / "index.json").write_text(json.dumps({
-        "dates": dates, "live_dates": live_dates(con), "generated_at": datetime.now().isoformat(timespec="seconds")}))
+    counts = {}
+    for market in markets:
+        data_dir = data_root / market
+        data_dir.mkdir(parents=True)
+        con = connect(market)
+        dates = list_dates(con)
+        for d in dates:
+            by_metric = {m: compare(con, d, m, market=market) for m in METRICS}
+            first = by_metric[METRICS[0]]
+            doc = {k: v for k, v in first.items() if k not in per_metric + ("weakness", "metric", "dates", "live_dates")}
+            doc["by_metric"] = {m: {k: r[k] for k in per_metric} for m, r in by_metric.items()}
+            # one stock list at the widest threshold; the page filters it to the selected %
+            doc["top_stocks"] = top_stocks(con, d, max(_within(m) for m in METRICS), min_mcap_cr=MARKETS[market]["min_mcap"])
+            doc.pop("max_dist_from_high", None)
+            (data_dir / f"{d}.json").write_text(json.dumps(doc, separators=(",", ":")))
+        (data_dir / "index.json").write_text(json.dumps({
+            "dates": dates, "live_dates": live_dates(con), "generated_at": datetime.now().isoformat(timespec="seconds")}))
+        con.close()
+        counts[market] = len(dates)
+    (data_root / "markets.json").write_text(json.dumps([{"id": m, "name": MARKETS[m]["name"]} for m in markets]))
     page = (BASE / "static" / "index.html").read_text()
     marker = "<script>window.STATIC_SITE = false;</script>"
     assert marker in page, "static/index.html is missing the STATIC_SITE marker"
     (out / "index.html").write_text(page.replace(marker, "<script>window.STATIC_SITE = true;</script>"))
-    return len(dates)
+    return counts
 
 
 def _github_output(**kv):
@@ -441,32 +507,50 @@ def _github_output(**kv):
             f.writelines(f"{k}={v}\n" for k, v in kv.items())
 
 
+def _markets_arg(arg, default):
+    ms = [m for m in (arg or default).split(",") if m]
+    bad = [m for m in ms if m not in MARKETS]
+    if bad:
+        sys.exit(f"Unknown market(s) {bad}; choose from {list(MARKETS)}")
+    return ms
+
+
 if __name__ == "__main__":
     cmd = sys.argv[1] if len(sys.argv) > 1 else "snapshot"
-    con = connect()
-    if cmd == "snapshot":
-        res = take_snapshot(con)
-        print(json.dumps(res))
-        _github_output(changed=str(res["stored"]).lower())
-    elif cmd == "auto":
-        if not snapshot_due(con):
-            print("Not due: outside market hours, or today's final data is already stored.")
-            _github_output(changed="false")
-        else:
+    arg = sys.argv[2] if len(sys.argv) > 2 else None
+    if cmd in ("snapshot", "auto"):
+        # snapshot: fetch now; auto: fetch only when due. Markets are independent: one failing doesn't stop the
+        # others, and the exit status reports the failure after every market has run.
+        changed, failed = False, []
+        for market in _markets_arg(arg, "in"):
+            if cmd == "auto":
+                with closing(connect(market)) as con:
+                    due = snapshot_due(con, market=market)
+                if not due:
+                    print(f"[{market}] Not due: outside market hours, or today's final data is already stored.")
+                    continue
             try:
-                res = take_snapshot(con)
-            except RuntimeError as e:
-                if "mid-update" not in str(e):
-                    raise
-                res = {"stored": False, "reason": str(e)}  # transient: the next scheduled run picks it up
-            print(json.dumps(res))
-            _github_output(changed=str(res["stored"]).lower())
+                res = take_market_snapshot(market)
+            except Exception as e:
+                if cmd == "auto" and isinstance(e, RuntimeError) and "mid-update" in str(e):
+                    res = {"stored": False, "reason": str(e)}  # transient: the next scheduled run picks it up
+                else:
+                    print(f"[{market}] failed: {e}", file=sys.stderr)
+                    failed.append(market)
+                    continue
+            print(f"[{market}]", json.dumps(res))
+            changed = changed or res["stored"]
+        _github_output(changed=str(changed).lower())
+        if failed:
+            sys.exit(f"Fetch failed for {failed}")
     elif cmd == "next-wait":
-        print(next_wait_seconds())
+        print(next_wait_seconds(_markets_arg(arg, "in")))
     elif cmd == "export":
-        out = sys.argv[2] if len(sys.argv) > 2 else "site"
-        print(f"Exported {export_site(con, out)} sessions to {out}/")
+        out = arg or "site"
+        markets = _markets_arg(sys.argv[3] if len(sys.argv) > 3 else None, ",".join(markets_with_data()) or "in")
+        print(f"Exported {export_site(out, markets)} sessions to {out}/")
     elif cmd == "compare":
-        _print_compare(compare(con, metric=sys.argv[2] if len(sys.argv) > 2 else DEFAULT_METRIC))
+        market = _markets_arg(sys.argv[3] if len(sys.argv) > 3 else None, "in")[0]
+        _print_compare(compare(connect(market), metric=arg or DEFAULT_METRIC, market=market))
     else:
         sys.exit(__doc__)

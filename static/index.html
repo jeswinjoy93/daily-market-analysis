@@ -118,6 +118,7 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
       <p class="sub" id="subtitle">Loading…</p>
     </div>
     <div class="controls">
+      <div class="seg" id="marketSeg" role="group" aria-label="Market" hidden></div>
       <div class="seg" id="viewSeg" role="group" aria-label="View">
         <button data-view="strong" title="Top 5 cards: strongest today and strongest overall">Strong</button><button data-view="all" title="Every sector and industry, sortable">All</button>
       </div>
@@ -150,7 +151,7 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
 
 <script>
 const METRICS = [["near_52w_5","5%"],["near_52w_10","10%"],["near_52w_15","15%"],["near_52w_20","20%"]];
-const state = { view: "strong", metric: "near_52w_10", date: null, data: null, sort: { sector: { key: "value", dir: -1 }, industry: { key: "value", dir: -1 } }, openStocks: new Set() };
+const state = { market: "in", markets: [], view: "strong", metric: "near_52w_10", date: null, data: null, sort: { sector: { key: "value", dir: -1 }, industry: { key: "value", dir: -1 } }, openStocks: new Set() };
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 const fmt = v => v == null ? "—" : v.toFixed(1) + "%";
@@ -187,19 +188,41 @@ $("metricSeg").addEventListener("click", e => {
 
 async function load() {
   state.data = window.STATIC_SITE ? await loadStatic() : await fetch("/api/compare?" + new URLSearchParams(
-    { metric: state.metric, ...(state.date ? { date: state.date } : {}) })).then(r => r.json());
+    { market: state.market, metric: state.metric, ...(state.date ? { date: state.date } : {}) })).then(r => r.json());
   render();
 }
 
-// Static site (GitHub Pages): data/index.json lists the sessions; data/<date>.json has every threshold.
+// India | US switch: shown when more than one market is available; remembered like the % choice.
+try { const m = localStorage.getItem("market"); if (m) state.market = m; } catch (e) {}
+async function loadMarkets() {
+  try {
+    state.markets = window.STATIC_SITE
+      ? await fetch("data/markets.json", { cache: "no-store" }).then(r => r.json())
+      : await fetch("/api/markets").then(r => r.json());
+  } catch (e) { state.markets = [{ id: "in", name: "India" }]; }
+  if (!state.markets.some(m => m.id === state.market)) state.market = state.markets[0]?.id || "in";
+  renderMarketSeg();
+}
+function renderMarketSeg() {
+  $("marketSeg").hidden = state.markets.length < 2;
+  $("marketSeg").innerHTML = state.markets.map(m =>
+    `<button data-market="${m.id}" aria-pressed="${m.id === state.market}">${esc(m.name)}</button>`).join("");
+}
+$("marketSeg").addEventListener("click", e => {
+  const m = e.target.dataset.market; if (!m || m === state.market) return;
+  state.market = m; state.openStocks.clear(); try { localStorage.setItem("market", m); } catch (e) {}
+  renderMarketSeg(); load();
+});
+
+// Static site (GitHub Pages): data/<market>/index.json lists the sessions; data/<market>/<date>.json has every threshold.
 const sessionFiles = {};
 async function loadStatic() {
   const getJSON = url => fetch(url, { cache: "no-store" }).then(r => { if (!r.ok) throw new Error(r.status + " " + url); return r.json(); });
-  const idx = await getJSON("data/index.json");
+  const idx = await getJSON(`data/${state.market}/index.json`);
   if (!idx.dates.length) return { date: null, dates: [] };
   const date = idx.dates.includes(state.date) ? state.date : idx.dates[0];
-  const key = date + "@" + idx.generated_at;  // re-download only when the site has been rebuilt
-  const f = sessionFiles[key] || (sessionFiles[key] = await getJSON(`data/${date}.json`));
+  const key = `${state.market}/${date}@${idx.generated_at}`;  // re-download only when the site has been rebuilt
+  const f = sessionFiles[key] || (sessionFiles[key] = await getJSON(`data/${state.market}/${date}.json`));
   // The session file lists stocks within the widest threshold; keep those within the selected one.
   const within = +state.metric.split("_").pop();
   const keep = groups => Object.fromEntries(Object.entries(groups).map(([g, list]) => [g, list.filter(st => st.dist >= -within)]));
@@ -211,7 +234,7 @@ async function loadStatic() {
 const r1 = v => v == null ? null : (Math.round(v * 10) / 10 || 0);  // round to 0.1, no "-0.0"
 function stocksPanel(kind, name) {
   const list = (state.data.top_stocks || {})[kind]?.[name];
-  const minCap = "₹" + (state.data.min_mcap_cr ?? 1000).toLocaleString("en-IN") + " cr";
+  const minCap = state.data.mcap_label || "₹1,000 cr";
   if (!list || !list.length) return `<div class="stocks"><div class="empty">No stocks with market cap ≥ ${minCap} within ${state.data.max_dist_from_high ?? 10}% of their 52W high.</div></div>`;
   return `<div class="stocks"><div class="hd"><span title="Closest to their 52-week high first">Stock (${list.length})</span><span>1D</span><span>1W</span><span>1M</span></div>` +
     list.map(st => `<div class="stock">
@@ -221,7 +244,7 @@ function stocksPanel(kind, name) {
 }
 function nearCount(kind, r) {  // "(14/42)": stocks near their 52W high / stocks in the group
   const n = ((state.data.top_stocks || {})[kind]?.[r.name] || []).length;
-  const cap = "₹" + (state.data.min_mcap_cr ?? 1000).toLocaleString("en-IN") + " cr";
+  const cap = state.data.mcap_label || "₹1,000 cr";
   return ` <span class="nc" title="${n} of ${r.stock_count} stocks (market cap ≥ ${cap}) are within ${state.data.max_dist_from_high ?? 10}% of their 52W high">(${n}/${r.stock_count})</span>`;
 }
 // One sector/industry row, as in the cards: rank · name (stocks · near high) · current % · change.
@@ -314,8 +337,11 @@ function render() {
     return;
   }
   const asOf = d.fetched_at ? d.fetched_at.slice(11, 16) : "";
-  $("subtitle").innerHTML = (d.live ? `<span class="live" title="Computed from live prices: previous close × today's move, against the 52-week high. Final numbers replace it after the end-of-day update.">LIVE ${asOf}</span>` : "") +
-    esc(`% of stocks within ${pctLabel()} of 52-week high · ${fmtDate(d.date)}`);
+  const liveTip = state.market === "us"
+    ? "Intraday prices (TradingView, 15 minutes delayed) against the 52-week high. Final numbers replace it after the close."
+    : "Computed from live prices: previous close × today's move, against the 52-week high. Final numbers replace it after the end-of-day update.";
+  $("subtitle").innerHTML = (d.live ? `<span class="live" title="${esc(liveTip)}">LIVE ${asOf}</span>` : "") +
+    esc(`${d.market_name ? d.market_name + " · " : ""}% of stocks within ${pctLabel()} of 52-week high · ${fmtDate(d.date)}`);
   $("notice").innerHTML = d.prev_date ? "" :
     `<div class="notice">Only one session stored so far. Day-over-day changes appear after the next session is recorded.</div>`;
   moverList($("strength"), d.strength);
@@ -326,7 +352,8 @@ function render() {
 
 // ---- TradingView export: "###Section,EXCH:SYM,..." (TradingView sections are one level deep,
 // so each card is a header section followed by one section per sector/industry).
-const tvSymbol = st => `${st.exchange || "NSE"}:${st.symbol.replace(/[^A-Za-z0-9]/g, "_")}`;
+const tvSymbol = st => state.market === "us" ? `${st.exchange}:${st.symbol}`
+  : `${st.exchange || "NSE"}:${st.symbol.replace(/[^A-Za-z0-9]/g, "_")}`;
 const tvName = n => n.replace(/[,#]/g, "").replace(/\s+/g, " ").trim();
 function buildTradingViewList() {
   const d = state.data, ts = d.top_stocks || {};
@@ -378,14 +405,14 @@ $("tvDownload").addEventListener("click", () => {
   const { text, count } = buildTradingViewList();
   const a = Object.assign(document.createElement("a"), {
     href: URL.createObjectURL(new Blob([text], { type: "text/plain" })),
-    download: `Market Analysis ${state.data.date} ${state.view === "all" ? "All" : "Strong"} within ${pctLabel()}.txt`,
+    download: `Market Analysis ${state.data.market_name || "India"} ${state.data.date} ${state.view === "all" ? "All" : "Strong"} within ${pctLabel()}.txt`,
   });
   a.click(); URL.revokeObjectURL(a.href);
   $("status").textContent = `Downloaded ${count} symbols. In TradingView: watchlist name ▾ → Import list… → choose this file.`;
 });
 
 renderMetricSeg();
-load().catch(e => { $("subtitle").textContent = "Could not reach the server: " + e.message; });
+loadMarkets().then(load).catch(e => { $("subtitle").textContent = "Could not reach the server: " + e.message; });
 // While a live session is on screen, pick up the server's periodic live refreshes.
 setInterval(() => { if (state.data?.live) load().catch(() => {}); }, 120000);
 </script>

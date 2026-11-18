@@ -1,13 +1,14 @@
 # Daily Market Analysis
 
-A dashboard of NSE **sector and industry breadth**: for every sector and industry, the % of stocks within N% of their
-52-week high. It records one snapshot per trading session in SQLite and shows which groups strengthened since the previous session,
+A dashboard of **sector and industry breadth** for **India (NSE/BSE)** and the **US (NYSE/NASDAQ)**: for every sector and
+industry, the % of stocks within N% of their 52-week high. It records one snapshot per trading session in SQLite and shows which groups strengthened since the previous session,
 which are strongest now, and the stocks driving them. It can also export those stocks as a TradingView watchlist.
 During market hours the numbers are **live**, calculated from current prices.
 
-**Public site:** https://jeswinjoy93.github.io/daily-market-analysis/ (updated by GitHub Actions, see below). It also runs locally.
+**Public site:** https://jeswinjoy93.github.io/daily-market-analysis/ (India and US, updated by GitHub Actions, see below).
 
-The data comes from [Trendvue Segment Analysis](https://trendvue.in/segment-analysis?groupBy=sector_performance&sectorDrillMode=industries&metric=near_52w_high&p_near_52w_high=near_52w_10).
+India's data comes from [Trendvue Segment Analysis](https://trendvue.in/segment-analysis?groupBy=sector_performance&sectorDrillMode=industries&metric=near_52w_high&p_near_52w_high=near_52w_10);
+the US data from TradingView's stock screener.
 It has no dependencies beyond the macOS system `python3` (3.9+).
 
 ## Run
@@ -18,14 +19,18 @@ python3 server.py                 # http://localhost:8050   (PORT=8051 python3 s
 
 Getting data in:
 
-- To fetch right away: `python3 market.py snapshot` (or `curl -X POST localhost:8050/api/snapshot` while the server runs). It takes about a minute.
-- While the server is running, on weekdays it fetches live data every 15 minutes from 09:15 to 15:45 (`LIVE_REFRESH_MIN=5 python3 server.py` to change).
-  From 17:00 it fetches every 30 minutes until that day's final data is stored. The page reloads a live session every 2 minutes.
+- To fetch right away: `python3 market.py snapshot` (India, about a minute) or `python3 market.py snapshot us` (US, a second or two);
+  or `curl -X POST "localhost:8050/api/snapshot?market=us"` while the server runs.
+- While the server is running, it fetches each market on its own weekdays: live data every 15 minutes during market hours
+  (India 09:15–15:50 IST, US 09:30–16:05 New York time; `LIVE_REFRESH_MIN=5 python3 server.py` to change), then every 30 minutes
+  after the close (India from 17:00 IST, US from 16:20 New York time) until that day's final data is stored.
+  The page reloads a live session every 2 minutes.
 - To record even when the server isn't running, run `./install_schedule.sh`. It installs a launchd job for weekdays at 17:30 and 21:00, logging to `data/snapshot.log`.
   To uninstall: `launchctl unload ~/Library/LaunchAgents/com.dailymarket.snapshot.plist` and delete that file.
 
-From the command line: `python3 market.py snapshot` · `python3 market.py auto` (fetch only if due) ·
-`python3 market.py compare [near_52w_10|near_52w_5|…]` · `python3 market.py export site` (static copy of the dashboard)
+From the command line (`MARKET` = `in` or `us`, default `in`):
+`python3 market.py snapshot [in,us]` · `python3 market.py auto [in,us]` (fetch only if due) ·
+`python3 market.py compare [near_52w_10|…] [MARKET]` · `python3 market.py export site [in,us]` (static copy of the dashboard; default: markets with data)
 
 ## Public site (GitHub Pages)
 
@@ -33,15 +38,18 @@ The workflow [.github/workflows/update.yml](.github/workflows/update.yml) runs t
 for free, as a static site on GitHub Pages:
 
 - **Schedule:** runs keep themselves going. Each run ends with a job that waits until the next update is due
-  (`market.py next-wait`: every 15 minutes during market hours and weekday evenings, otherwise the next market open) and then
-  starts the next run. Each run runs `market.py auto`, which fetches only when due, using the same rule as the local server:
-  every run during market hours, then from 17:00 until the day's final data is stored.
+  (`market.py next-wait in,us`: every 15 minutes while either market is open or past its close on a weekday, otherwise the
+  next open) and then starts the next run. Each run runs `market.py auto in,us`, which fetches each market only when due, using
+  the same rule as the local server: every run during that market's hours, then after its close until the day's final data is
+  stored. A run where nothing is due takes a few seconds.
+  The markets are fetched independently: if one fails, the other's new data is still saved and published.
   GitHub's own cron schedule is kept only as a backup that restarts the chain if it ever stops: on a new repo it didn't fire
   at all for hours. Only one waiting job exists at a time (a newer one cancels the older), so the chain can't multiply.
-- **Fetch right away:** Actions tab → *Update dashboard* → **Run workflow**.
-- **Database:** `market.db.gz` is stored as a file on a release named `data`. Each run downloads it, adds new data and uploads it again.
-  Keeping it out of git avoids repository bloat.
-- **Site:** `market.py export site` writes `index.html` plus `data/index.json` and one `data/<date>.json` per session (about 300 KB each).
+- **Fetch right away:** Actions tab → *Update dashboard* → **Run workflow** (fetches both markets).
+- **Databases:** `market.db.gz` (India) and `market_us.db.gz` (US) are stored as files on a release named `data`. Each run
+  downloads them, adds new data and uploads them again. Keeping them out of git avoids repository bloat.
+- **Site:** `market.py export site` writes `index.html`, `data/markets.json`, and per market `data/<market>/index.json` plus one
+  `data/<market>/<date>.json` per session (about 400 KB for India, 650 KB for the US).
   Each session file holds every threshold's numbers and the stocks within 20%; the page keeps those within the selected %.
   The site is rebuilt only when data changed, or on a push to `main`.
 - **Keep-alive:** GitHub pauses schedules in public repos after 60 days without activity, so the workflow makes an empty commit
@@ -57,7 +65,7 @@ the stock lists, the counts and the TradingView export. Each row shows its count
 The page shows the latest session, compared against the session before it. A live session is marked **LIVE hh:mm**
 (the time of its last fetch). Older sessions stay in the database (`python3 market.py compare`, or `/api/compare?date=YYYY-MM-DD`).
 
-A **Strong / All** switch at the top picks the view (remembered between visits): **Strong** shows the four top-5 cards,
+An **India / US** switch picks the market, and a **Strong / All** switch picks the view (both remembered between visits): **Strong** shows the four top-5 cards,
 **All** shows the two full tables. The TradingView export follows the view (below).
 
 | View | Card / table | Ranks sectors/industries by |
@@ -79,7 +87,7 @@ its "pts" unit to leave more room.
 
 | Rule | Value | Setting in `market.py` |
 |---|---|---|
-| **Universe:** only stocks with market cap of at least | ₹1,000 cr | `MIN_MCAP_CR` |
+| **Universe:** only stocks with market cap of at least | India ₹1,000 cr · US $1B | `MARKETS[...]["min_mcap"]` |
 | A sector/industry is ranked in the cards only with at least | 3 stocks in the universe | `MIN_GROUP_STOCKS` |
 
 - The universe rule applies everywhere: to the sector/industry percentages, the (near/total) counts and the stock lists.
@@ -91,7 +99,7 @@ its "pts" unit to leave more room.
 ## TradingView export
 
 **Copy for TradingView** and **↓ .txt** export the stocks in the current view, at the selected X%, as a watchlist
-(the file is named e.g. `Market Analysis 2026-11-17 Strong within 10%.txt`):
+(the file is named e.g. `Market Analysis India 2026-11-17 Strong within 10%.txt`):
 
 - **Strong:** every stock listed in the four cards, one header section per card.
   ```
@@ -107,13 +115,35 @@ its "pts" unit to leave more room.
   Section names include the stock count.
 - A watchlist can hold each symbol only once. In the Strong export a stock can appear in several cards, so it stays in the first
   section it appears in, and later sections note it, e.g. `###Banks (17 - 17 listed above)`. The All export has no repeats.
-- Symbols use the stock's exchange (`NSE:`/`BSE:`). `-` and `&` become `_`, as TradingView does (`NSE:BAJAJ_AUTO`, `NSE:M_M`).
+- Symbols use the stock's exchange. India: `NSE:`/`BSE:`, with `-` and `&` turned into `_` as TradingView does (`NSE:BAJAJ_AUTO`, `NSE:M_M`).
+  US: TradingView's own tickers, as-is (`NASDAQ:AAPL`, `NYSE:BRK.B`). The file name includes the market, e.g. `Market Analysis US 2026-11-17 Strong within 10%.txt`.
 - To import, choose the watchlist name ▾ → **Import list…** in TradingView and pick the .txt file. This is the documented route and keeps the sections.
   Pasting into "Add symbol" adds the stocks, but may not keep the sections.
 
-## How data is collected
+## US market
 
-Each snapshot fetches the following Trendvue endpoints. They are public JSON, rate-limited to **120 requests/min per IP**,
+`us.py` fetches the US with **one request** to TradingView's screener (`scanner.tradingview.com/america/scan`). It returns every
+stock with its sector, industry, price, 52-week high, 1D/1W/1M moves and market cap, in TradingView's own classification
+(20 sectors, ~126 industries in the $1B universe).
+
+- **Common stocks only**, listed on **NYSE, NASDAQ and NYSE American (AMEX)**: no preferreds, ADRs (e.g. TSM, ASML), funds,
+  units or OTC listings.
+- **One share class per company:** GOOGL/GOOG, BRK.A/BRK.B, FOXA/FOX etc. would count twice, so only the most traded class is
+  kept. Classes are matched by TradingView's company logo id plus the first two words of the name and a similar market cap,
+  which keeps affiliates such as Coca-Cola and its bottlers, or Cheniere Energy and Cheniere Energy Partners, separate.
+- **Prices are 15 minutes delayed** (TradingView's free data), and its 52-week high includes today, so the % from the high is
+  computed directly: `price / max(52W high, price) − 1`. No end-of-day estimate is needed.
+- **Sessions are dated in New York time.** Before 09:30 a fetch belongs to the previous trading day. Data is live (provisional)
+  until 16:20, then final. A market holiday is detected when at least 95% of prices are unchanged from the previous session,
+  and nothing is stored.
+- Stored in `data/market_us.db` (`MARKET_DB_US` to change), same tables as India; `market_cap_cr` holds US$ million there.
+- **Terms:** this is TradingView's unofficial screener endpoint, and their terms restrict automated access and republishing
+  their data. The public site publishes only derived numbers (% near the high, 1D/1W/1M moves), no prices, but if TradingView
+  objects or blocks the requests, remove `us` from the workflow (`market.py … in`) and the page goes back to India only.
+
+## How data is collected (India)
+
+Each India snapshot fetches the following Trendvue endpoints. They are public JSON, rate-limited to **120 requests/min per IP**,
 and the limit is shared with any Trendvue tab open in your browser.
 
 | Endpoint | Used for |
@@ -151,17 +181,18 @@ live price  = previous close × (1 + live 1D %)
 
 ## Data
 
-The database is `data/market.db`. Set `MARKET_DB=/path/to.db` to use a different file.
+The databases are `data/market.db` (India) and `data/market_us.db` (US). Set `MARKET_DB` / `MARKET_DB_US` to use different files.
 
 | Table | Contents |
 |---|---|
 | `snapshots` | One row per trading session (`snap_date`, `fetched_at`, `provisional` = 1 for live data) |
-| `segment_values` | Trendvue's numbers per sector/industry for all five thresholds, plus the full raw JSON row |
-| `stock_values` | Per stock per session: symbol, company, industry, sector, exchange, `pct_from_52w_high`, `change_1d`/`_1w`/`_1m`, `market_cap_cr`, plus the `price` and `high_52w` used |
+| `segment_values` | India only: Trendvue's numbers per sector/industry for all five thresholds, plus the full raw JSON row |
+| `stock_values` | Per stock per session: symbol, company, industry, sector, exchange, `pct_from_52w_high`, `change_1d`/`_1w`/`_1m`, `market_cap_cr` (₹ crore; US$ million for the US), plus the `price` and `high_52w` used |
 
 ## Files
 
-- `market.py`: fetching, storage, settings and comparison logic, plus a command-line interface.
+- `market.py`: per-market settings, India fetching, storage, comparison logic and static export, plus a command-line interface.
+- `us.py`: the US fetch from TradingView's screener.
 - `server.py`: the web server and the automatic live and end-of-day fetches.
 - `.github/workflows/update.yml`: the scheduled GitHub Pages build.
 - `static/index.html`: the dashboard and the TradingView export.
