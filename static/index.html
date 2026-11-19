@@ -130,18 +130,20 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
 .sitem .sym { font-weight: 600; }
 .sitem .co { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .schart { padding: 14px 16px 10px; min-width: 0; }
-.chd { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 12px; }
+.chd { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 12px; }
 .chd .csym { font-size: 18px; font-weight: 650; color: var(--ink); text-decoration: none; }
 .chd .csym:hover { text-decoration: underline; }
-.chd .co { color: var(--ink-2); }
-.chd .scan { display: inline-block; margin-left: 6px; padding: 0 7px; border: 1px solid var(--axis); border-radius: 999px;
+.chd .cquote { margin-left: 10px; color: var(--ink-2); font-variant-numeric: tabular-nums; }
+.chd .cquote a { color: var(--ink-2); white-space: nowrap; }
+.cstats .scan { display: inline-block; margin-left: 6px; padding: 0 7px; border: 1px solid var(--axis); border-radius: 999px;
   font-size: 12px; color: var(--ink-2); white-space: nowrap; vertical-align: 1px; }
-.chd .sec.strong { background: var(--strong-bg); color: #fff; font-weight: 600; border-radius: 4px; padding: 1px 7px; cursor: help; }
+.cstats .sec.strong { background: var(--strong-bg); color: #fff; font-weight: 600; border-radius: 4px; padding: 1px 7px; cursor: help; }
 .cnav { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .cnav button { padding: 2px 9px; }
 .cstats { color: var(--ink-2); font-size: 13px; margin: 4px 0 10px; font-variant-numeric: tabular-nums; }
 .cstats a { color: var(--ink-2); }
-.ctools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.ctools { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+.ctools .cnav { margin-left: 4px; }
 .ctools .seg button { padding: 3px 9px; font-size: 13px; }
 .clegend { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; min-height: 18px; }
 .clegend .k { color: var(--muted); }
@@ -156,6 +158,8 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
 @media (max-width: 720px) {
   .setups { grid-template-columns: minmax(0, 1fr); }
   .schart { padding: 12px 12px 8px; }
+  .chd { grid-template-columns: minmax(0, 1fr); }  /* controls go to their own row */
+  .ctools { flex-wrap: wrap; }
   .slist { border-right: 0; border-bottom: 1px solid var(--border); height: auto; min-height: 0; max-height: 230px; }
 }
 </style>
@@ -627,17 +631,17 @@ function renderSetupChart() {
   ].filter(Boolean).join(" · ");
   el.innerHTML = `<div class="chd">
       <div><a class="csym" href="https://trendvue.in/stocks/${encodeURIComponent(st.symbol)}" target="_blank" rel="noopener" title="Open on Trendvue">${esc(st.symbol)}</a>
-        <span class="co">${esc(st.company || "")}${st.industry ? ` · ${sectorTag(st.sector)} › ${esc(st.industry)}` : ""}</span>
-        ${scansOf(st.symbol).map(su => `<span class="scan" title="In Trendvue's ${esc(su.name)} scan${su.id === "top_movers" && st.movers?.length ? ` (top mover over ${st.movers.join(", ")})` : ""}">${esc(su.name)}${su.id === "top_movers" && st.movers?.length ? ` ${st.movers.join("/")}` : ""}</span>`).join("")}</div>
-      <div class="cnav"><button id="setPrev" aria-label="Previous stock (↑)" title="Previous stock (↑)" ${i <= 0 ? "disabled" : ""}>‹</button>${i + 1} / ${list.length}<button id="setNext" aria-label="Next stock (↓)" title="Next stock (↓)" ${i >= list.length - 1 ? "disabled" : ""}>›</button></div>
+        <span class="cquote">${stats} · <a href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSym)}" target="_blank" rel="noopener">TradingView ↗</a></span></div>
+      <div class="ctools">
+        <div class="seg" id="freqSeg" role="group" aria-label="Timeframe">${Object.keys(RANGES).map(f =>
+          `<button data-freq="${f}" aria-pressed="${f === setups.freq}">${f === "daily" ? "Daily" : "Weekly"}</button>`).join("")}</div>
+        <div class="seg" id="rangeSeg" role="group" aria-label="Range">${Object.keys(RANGES[setups.freq]).map(r =>
+          `<button data-range="${r}" aria-pressed="${r === setups.range[setups.freq]}">${r}</button>`).join("")}</div>
+        <div class="cnav"><button id="setPrev" aria-label="Previous stock (↑)" title="Previous stock (↑)" ${i <= 0 ? "disabled" : ""}>‹</button>${i + 1} / ${list.length}<button id="setNext" aria-label="Next stock (↓)" title="Next stock (↓)" ${i >= list.length - 1 ? "disabled" : ""}>›</button></div>
+      </div>
     </div>
-    <div class="cstats">${stats} · <a href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSym)}" target="_blank" rel="noopener">TradingView ↗</a></div>
-    <div class="ctools">
-      <div class="seg" id="freqSeg" role="group" aria-label="Timeframe">${Object.keys(RANGES).map(f =>
-        `<button data-freq="${f}" aria-pressed="${f === setups.freq}">${f === "daily" ? "Daily" : "Weekly"}</button>`).join("")}</div>
-      <div class="seg" id="rangeSeg" role="group" aria-label="Range">${Object.keys(RANGES[setups.freq]).map(r =>
-        `<button data-range="${r}" aria-pressed="${r === setups.range[setups.freq]}">${r}</button>`).join("")}</div>
-    </div>
+    <div class="cstats">${st.industry ? `${sectorTag(st.sector)} › ${esc(st.industry)}` : ""}
+      ${scansOf(st.symbol).map(su => `<span class="scan" title="In Trendvue's ${esc(su.name)} scan${su.id === "top_movers" && st.movers?.length ? ` (top mover over ${st.movers.join(", ")})` : ""}">${esc(su.name)}${su.id === "top_movers" && st.movers?.length ? ` ${st.movers.join("/")}` : ""}</span>`).join("")}</div>
     <div class="clegend" id="clegend"></div>
     <div class="chart" id="chart"></div>`;
   $("setPrev").onclick = () => selectSetup(i - 1);
