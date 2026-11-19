@@ -113,11 +113,10 @@ daily scans that also pass two filters, **each listed once**:
 
 Laid out like Trendvue's watchlist, using the full window width (the chart also fills the window's height):
 
-- **Left:** the stocks in Tight Consolidation's order (tightest first), each with its company name. The header shows how many pass the filters per scan
-  (a stock can count in several); hover it for each scan's size on Trendvue.
+- **Left:** the stocks in Tight Consolidation's order (tightest first), each with its company name. The header shows how many there are.
 - **Right:** the selected stock's chart: black OHLC bars (open tick left, close tick right) on a log scale with
   EMA 20/50/200 and volume, **Daily** (1M/3M/6M/1Y) or **Weekly** (6M/1Y/3Y/5Y), remembered between visits. Hover for a
-  bar's values. Above it: price, 1D move, market cap and 1W/1M moves. The symbol links to its Trendvue page, plus a
+  bar's values. Above it: price, 1D move and market cap. The symbol links to its Trendvue page, plus a
   TradingView link.
 - **Scans:** after the sector and industry, a tag for each scan the stock is in; Top Movers adds the periods it leads,
   e.g. `Top Movers 1Y`.
