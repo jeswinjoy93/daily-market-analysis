@@ -12,6 +12,9 @@
   --up: #2a78d6; --down: #e34948;            /* diverging bar fills (validated pair) */
   --up-text: #006300; --down-text: #c42f2f;  /* delta text */
   --mid: #f0efec; --hover: rgba(11,11,11,0.04);
+  --price-bar: #0b0b0b;
+  --ema20: #2a78d6; --ema50: #eb6834; --ema200: #1baf7a;
+  --strong-bg: #008300;  /* white text 4.95:1 */
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
@@ -19,6 +22,9 @@
     --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
     --up: #3987e5; --down: #e66767; --up-text: #0ca30c; --down-text: #ef7b7b;
     --mid: #383835; --hover: rgba(255,255,255,0.05);
+    --price-bar: #f0efec;  /* black bars would vanish on the dark surface */
+    --ema20: #3987e5; --ema50: #d95926; --ema200: #199e70;
+    --strong-bg: #118a11;  /* white text 4.5:1, 3.9:1 against the dark surface */
   }
 }
 * { box-sizing: border-box; }
@@ -27,8 +33,11 @@ html { scrollbar-gutter: stable; }
 @supports not (scrollbar-gutter: stable) { html { overflow-y: scroll; } }
 body { margin: 0; background: var(--page); color: var(--ink);
   font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-.wrap { max-width: 1120px; margin: 0 auto; padding: 28px 16px 64px; }
-header { display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
+/* Every page uses the full window width (Setups needs it for the chart), so the header stays put when switching pages */
+.wrap { margin: 0 auto; padding: 28px 24px 64px; }
+@media (max-width: 520px) { .wrap { padding-left: 16px; padding-right: 16px; } }
+/* title, then the controls on their own row from the left at every width: the page switch never moves */
+header { display: flex; flex-direction: column; align-items: flex-start; gap: 14px; margin-bottom: 20px; }
 h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -0.01em; }
 .sub { color: var(--ink-2); margin: 0; }
 .controls { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
@@ -108,6 +117,48 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
 .status { color: var(--muted); font-size: 12px; min-height: 18px; }
 .live { display: inline-block; font-size: 11px; font-weight: 650; letter-spacing: .05em; padding: 1px 7px; margin-right: 4px;
   border-radius: 999px; background: var(--ink); color: var(--surface); vertical-align: 1px; }
+
+/* Setups page: stock list on the left, chart on the right */
+.setups { display: grid; grid-template-columns: 250px minmax(0, 1fr); padding: 0; overflow: hidden; }
+.slist { border-right: 1px solid var(--border); height: 0; min-height: 100%; overflow-y: auto; padding: 12px 8px; }
+.slhd { padding: 0 8px; font-weight: 600; font-size: 15px; }
+.slsub { padding: 2px 8px 10px; color: var(--muted); font-size: 12px; }
+.sitem { display: block; width: 100%; text-align: left; border: 0; border-radius: 8px; padding: 7px 10px; margin: 1px 0;
+  background: transparent; }
+.sitem:hover { background: var(--hover); }
+.sitem[aria-selected="true"] { background: var(--mid); box-shadow: inset 3px 0 0 var(--ink); }
+.sitem .srow { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.sitem .sym { font-weight: 600; }
+.sitem .co { display: block; color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.schart { padding: 14px 16px 10px; min-width: 0; }
+.chd { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: baseline; gap: 12px; }
+.chd .csym { font-size: 18px; font-weight: 650; color: var(--ink); text-decoration: none; }
+.chd .csym:hover { text-decoration: underline; }
+.chd .co { color: var(--ink-2); }
+.chd .scan { display: inline-block; margin-left: 6px; padding: 0 7px; border: 1px solid var(--axis); border-radius: 999px;
+  font-size: 12px; color: var(--ink-2); white-space: nowrap; vertical-align: 1px; }
+.chd .sec.strong { background: var(--strong-bg); color: #fff; font-weight: 600; border-radius: 4px; padding: 1px 7px; cursor: help; }
+.cnav { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cnav button { padding: 2px 9px; }
+.cstats { color: var(--ink-2); font-size: 13px; margin: 4px 0 10px; font-variant-numeric: tabular-nums; }
+.cstats a { color: var(--ink-2); }
+.ctools { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }
+.ctools .seg button { padding: 3px 9px; font-size: 13px; }
+.clegend { display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 12px; color: var(--ink-2); font-variant-numeric: tabular-nums; min-height: 18px; }
+.clegend .k { color: var(--muted); }
+.clegend .sw { display: inline-block; width: 12px; height: 2px; border-radius: 1px; vertical-align: 3px; margin-right: 4px; }
+.chart { position: relative; width: 100%; touch-action: pan-y; }
+.chart svg { display: block; width: 100%; user-select: none; }
+.chart text { font: 11px system-ui, -apple-system, "Segoe UI", sans-serif; fill: var(--muted); font-variant-numeric: tabular-nums; }
+.chart .tag text { fill: var(--surface); font-weight: 600; }
+.chart .tag rect { fill: var(--ink); }
+.chart .xh { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
+.chempty { color: var(--muted); padding: 60px 0; text-align: center; }
+@media (max-width: 720px) {
+  .setups { grid-template-columns: minmax(0, 1fr); }
+  .schart { padding: 12px 12px 8px; }
+  .slist { border-right: 0; border-bottom: 1px solid var(--border); height: auto; min-height: 0; max-height: 230px; }
+}
 </style>
 </head>
 <body>
@@ -118,13 +169,16 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
       <p class="sub" id="subtitle">Loading…</p>
     </div>
     <div class="controls">
+      <div class="seg" id="pageSeg" role="group" aria-label="Page">
+        <button data-page="breadth" title="Sector and industry breadth: % of stocks near their 52-week high">Breadth</button><button data-page="setups" title="India: stocks in Trendvue's High Tight Flag, Near All-Time High or Top Movers scans that are also in Tight Consolidation and close above EMA 50, with charts">Setups</button>
+      </div>
       <div class="seg" id="marketSeg" role="group" aria-label="Market" hidden></div>
       <div class="seg" id="viewSeg" role="group" aria-label="View">
         <button data-view="strong" title="Top 5 cards: strongest today and strongest overall">Strong</button><button data-view="all" title="Every sector and industry, sortable">All</button>
       </div>
       <div class="seg" id="metricSeg" role="group" aria-label="Within % of 52-week high"></div>
       <span class="tv">
-        <button id="tvCopy" title="Copy the stocks in this view as a TradingView watchlist. Strong: the 4 cards. All: every sector, with a sub-section per industry.">Copy for TradingView</button><button id="tvDownload" title="Download as a .txt file for TradingView: watchlist menu → Import list…" aria-label="Download TradingView watchlist file">↓ .txt</button>
+        <button id="tvCopy" title="Copy the stocks in this view as a TradingView watchlist. Strong: the 4 cards. All: every sector, with a sub-section per industry. Setups: the setup stocks.">Copy for TradingView</button><button id="tvDownload" title="Download as a .txt file for TradingView: watchlist menu → Import list…" aria-label="Download TradingView watchlist file">↓ .txt</button>
       </span>
     </div>
   </header>
@@ -143,6 +197,13 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
   </div>
   </div>
 
+  <div id="viewSetups" hidden>
+    <section class="card setups">
+      <div class="slist" id="setupList" role="listbox" aria-label="Setup stocks"></div>
+      <div class="schart" id="setupChart"></div>
+    </section>
+  </div>
+
   <div class="grid2" id="viewAll" hidden>
     <section class="card"><h2 id="secHead">All sectors<span class="hint">click for stocks</span></h2><table class="gtable" id="secTable"></table></section>
     <section class="card"><h2 id="indHead">All industries<span class="hint">click for stocks</span></h2><table class="gtable" id="indTable"></table></section>
@@ -151,7 +212,7 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
 
 <script>
 const METRICS = [["near_52w_5","5%"],["near_52w_10","10%"],["near_52w_15","15%"],["near_52w_20","20%"]];
-const state = { market: "in", markets: [], view: "strong", metric: "near_52w_10", date: null, data: null, sort: { sector: { key: "value", dir: -1 }, industry: { key: "value", dir: -1 } }, openStocks: new Set() };
+const state = { page: "breadth", market: "in", markets: [], view: "strong", metric: "near_52w_10", date: null, data: null, sort: { sector: { key: "value", dir: -1 }, industry: { key: "value", dir: -1 } }, openStocks: new Set() };
 const $ = id => document.getElementById(id);
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
 const fmt = v => v == null ? "—" : v.toFixed(1) + "%";
@@ -164,11 +225,32 @@ try { const m = localStorage.getItem("metric"); if (METRICS.some(x => x[0] === m
 
 // Strong (top 5 cards) | All (sector and industry tables); remembered like the % choice.
 try { const v = localStorage.getItem("view"); if (v === "strong" || v === "all") state.view = v; } catch (e) {}
+// Breadth (the cards/tables) | Setups (scan stocks with charts); remembered, and #setups in the URL opens Setups.
+try { const p = localStorage.getItem("page"); if (p === "breadth" || p === "setups") state.page = p; } catch (e) {}
+if (location.hash === "#setups") state.page = "setups";
 function renderView() {
+  const setupsPage = state.page === "setups";
+  document.querySelectorAll("#pageSeg button").forEach(b => b.setAttribute("aria-pressed", b.dataset.page === state.page));
   document.querySelectorAll("#viewSeg button").forEach(b => b.setAttribute("aria-pressed", b.dataset.view === state.view));
-  $("viewStrong").hidden = state.view !== "strong";
-  $("viewAll").hidden = state.view !== "all";
+  $("viewStrong").hidden = setupsPage || state.view !== "strong";
+  $("viewAll").hidden = setupsPage || state.view !== "all";
+  $("viewSetups").hidden = !setupsPage;
+  // breadth-only controls (the Setups scans are India's, at their own criteria)
+  $("viewSeg").hidden = $("metricSeg").hidden = setupsPage;
+  $("marketSeg").hidden = setupsPage || state.markets.length < 2;
 }
+$("pageSeg").addEventListener("click", e => {
+  const p = e.target.dataset.page; if (!p || p === state.page) return;
+  state.page = p; try { localStorage.setItem("page", p); } catch (e) {}
+  history.replaceState(null, "", p === "setups" ? "#setups" : location.pathname + location.search);
+  $("status").textContent = "";
+  renderView();
+  if (p === "setups") {
+    if (!setups.data) loadSetups().catch(setupsFailed);
+    else { renderSetups(); if (setups.strongMetric !== state.metric) loadStrongSectors().then(renderSetupChart); }
+  }
+  else if (state.data) render();
+});
 $("viewSeg").addEventListener("click", e => {
   const v = e.target.dataset.view; if (!v) return;
   state.view = v; try { localStorage.setItem("view", v); } catch (e) {}
@@ -204,7 +286,7 @@ async function loadMarkets() {
   renderMarketSeg();
 }
 function renderMarketSeg() {
-  $("marketSeg").hidden = state.markets.length < 2;
+  $("marketSeg").hidden = state.page === "setups" || state.markets.length < 2;
   $("marketSeg").innerHTML = state.markets.map(m =>
     `<button data-market="${m.id}" aria-pressed="${m.id === state.market}">${esc(m.name)}</button>`).join("");
 }
@@ -216,13 +298,13 @@ $("marketSeg").addEventListener("click", e => {
 
 // Static site (GitHub Pages): data/<market>/index.json lists the sessions; data/<market>/<date>.json has every threshold.
 const sessionFiles = {};
-async function loadStatic() {
+async function loadStatic(market = state.market) {
   const getJSON = url => fetch(url, { cache: "no-store" }).then(r => { if (!r.ok) throw new Error(r.status + " " + url); return r.json(); });
-  const idx = await getJSON(`data/${state.market}/index.json`);
+  const idx = await getJSON(`data/${market}/index.json`);
   if (!idx.dates.length) return { date: null, dates: [] };
   const date = idx.dates.includes(state.date) ? state.date : idx.dates[0];
-  const key = `${state.market}/${date}@${idx.generated_at}`;  // re-download only when the site has been rebuilt
-  const f = sessionFiles[key] || (sessionFiles[key] = await getJSON(`data/${state.market}/${date}.json`));
+  const key = `${market}/${date}@${idx.generated_at}`;  // re-download only when the site has been rebuilt
+  const f = sessionFiles[key] || (sessionFiles[key] = await getJSON(`data/${market}/${date}.json`));
   // The session file lists stocks within the widest threshold; keep those within the selected one.
   const within = +state.metric.split("_").pop();
   const keep = groups => Object.fromEntries(Object.entries(groups).map(([g, list]) => [g, list.filter(st => st.dist >= -within)]));
@@ -329,6 +411,7 @@ document.addEventListener("click", e => {
 });
 
 function render() {
+  if (state.page === "setups") return;  // the breadth data still loads, for switching back
   const d = state.data;
   if (!d.date) {
     $("subtitle").textContent = "No data yet.";
@@ -356,6 +439,11 @@ const tvSymbol = st => state.market === "us" ? `${st.exchange}:${st.symbol}`
   : `${st.exchange || "NSE"}:${st.symbol.replace(/[^A-Za-z0-9]/g, "_")}`;
 const tvName = n => n.replace(/[,#]/g, "").replace(/\s+/g, " ").trim();
 function buildTradingViewList() {
+  if (state.page === "setups") {  // one section: every setup stock once, in the page's order
+    const syms = curList().map(st => `${st.exchange || "NSE"}:${st.symbol.replace(/[^A-Za-z0-9]/g, "_")}`);
+    return { text: [`###${tvName("Setups - " + filtersText(" + ")).toUpperCase()} (${syms.length})`, ...syms].join(","),
+             count: syms.length, sections: 1 };
+  }
   const d = state.data, ts = d.top_stocks || {};
   // Strong view: the four cards. All view: every sector (header) followed by its industries' stocks —
   // a sector's stocks are its industries' stocks, so this covers both without listing anything twice.
@@ -392,8 +480,9 @@ async function copyText(text) {
   document.body.appendChild(ta); ta.select();
   const ok = document.execCommand("copy"); ta.remove(); return ok;
 }
+const exportReady = () => state.page === "setups" ? !!setups.data?.date : !!state.data?.date;
 $("tvCopy").addEventListener("click", async () => {
-  if (!state.data?.date) return;
+  if (!exportReady()) return;
   const { text, count, sections } = buildTradingViewList();
   if (!count) { $("status").textContent = "No stocks to copy for this session."; return; }
   $("status").textContent = (await copyText(text))
@@ -401,20 +490,293 @@ $("tvCopy").addEventListener("click", async () => {
     : "Copy failed — use ↓ .txt instead.";
 });
 $("tvDownload").addEventListener("click", () => {
-  if (!state.data?.date) return;
+  if (!exportReady()) return;
   const { text, count } = buildTradingViewList();
   const a = Object.assign(document.createElement("a"), {
     href: URL.createObjectURL(new Blob([text], { type: "text/plain" })),
-    download: `Market Analysis ${state.data.market_name || "India"} ${state.data.date} ${state.view === "all" ? "All" : "Strong"} within ${pctLabel()}.txt`,
+    download: state.page === "setups"
+      ? `Market Analysis India ${setups.data.date} Setups with ${filtersText(" + ")}.txt`
+      : `Market Analysis ${state.data.market_name || "India"} ${state.data.date} ${state.view === "all" ? "All" : "Strong"} within ${pctLabel()}.txt`,
   });
   a.click(); URL.revokeObjectURL(a.href);
   $("status").textContent = `Downloaded ${count} symbols. In TradingView: watchlist name ▾ → Import list… → choose this file.`;
 });
 
+// ---- Setups page: the stocks in any of the Trendvue setup scans (High Tight Flag, Near All-Time High, Top Movers) that
+// pass the filters (Tight Consolidation, above EMA 50), each listed once on the left with the chart on the right, like
+// Trendvue's watchlist; the chart header names the scans it's in. ↑/↓ (or ‹ ›) flip through the list.
+const RANGES = { daily: { "1M": 22, "3M": 66, "6M": 132, "1Y": 252 }, weekly: { "6M": 26, "1Y": 52, "3Y": 156, "5Y": 260 } };
+const EMAS = [["ema20", "EMA 20"], ["ema50", "EMA 50"], ["ema200", "EMA 200"]];
+const setups = { data: null, strong: new Map(), strongMetric: null, sel: null, freq: "daily", range: { daily: "1Y", weekly: "5Y" }, chart: null };
+// "Tight Consolidation and above EMA 50": the filters every setup stock passes
+const filtersText = sep => (setups.data?.filters || [setups.data?.filter?.name || "the filter scan"]).join(sep);
+const curList = () => setups.data?.stocks || [];  // each stock once, tightest first
+const scansOf = sym => (setups.data?.setups || []).filter(su => su.symbols.includes(sym));
+try {
+  const c = JSON.parse(localStorage.getItem("setupChart") || "null");
+  if (c && RANGES[c.freq]) setups.freq = c.freq;
+  for (const f in RANGES) if (c?.range?.[f] in RANGES[f]) setups.range[f] = c.range[f];
+} catch (e) {}
+const saveChartPrefs = () => { try { localStorage.setItem("setupChart", JSON.stringify({ freq: setups.freq, range: setups.range })); } catch (e) {} };
+
+const fmtP = v => v == null ? "—" : v.toLocaleString("en-IN", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const fmtV = v => v == null ? "—" : v >= 1e9 ? (v / 1e9).toFixed(2) + "B" : v >= 1e6 ? (v / 1e6).toFixed(2) + "M" : v >= 1e3 ? (v / 1e3).toFixed(0) + "K" : String(v);
+const fmtPct = v => v == null ? "—" : (r1(v) > 0 ? "+" : "") + r1(v).toFixed(1) + "%";
+const fmtBarDate = d => new Date(d + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
+
+// India's strong sectors = the Breadth page's Strong-view sector cards (top 5 today, top 5 now) at the selected %,
+// marked green on the Setups chart header. Map: sector -> why it's strong.
+async function loadStrongSectors() {
+  const metric = state.metric, strong = new Map();
+  try {
+    const d = state.market === "in" && state.data?.date && state.data.metric === metric ? state.data
+      : window.STATIC_SITE ? await loadStatic("in")
+      : await fetch("/api/compare?" + new URLSearchParams({ market: "in", metric })).then(r => r.json());
+    const add = (name, why) => strong.set(name, [...(strong.get(name) || []), why]);
+    for (const r of d.strength || []) add(r.name, `Top 5 strong sectors today (+${r.change.toFixed(1)} pts)`);
+    (d.sectors || []).filter(r => r.value != null && (r.stock_count ?? 0) >= (d.min_group_stocks ?? 3))
+      .sort((a, b) => b.value - a.value).slice(0, 5).forEach(r => add(r.name, `Top 5 strong sectors (${fmt(r.value)} within ${pctLabel()} of 52W high)`));
+  } catch (e) {}  // no marking rather than no page
+  setups.strong = strong; setups.strongMetric = metric;
+}
+async function loadSetups() {
+  const strongDone = loadStrongSectors();
+  const d = window.STATIC_SITE
+    ? await fetch("data/setups.json", { cache: "no-store" }).then(r => r.ok ? r.json() : { date: null, setups: [], stocks: [] })
+    : await fetch("/api/setups").then(r => {
+        if (r.status === 404) throw new Error("the server doesn't know /api/setups yet — restart it (python3 server.py)");
+        return r.json();
+      });
+  if (d.error) throw new Error(d.error);
+  await strongDone;
+  // Price and 1D/1W/1M from the chart's own daily bars, so the list, the stats and the chart agree: after the close
+  // Trendvue's scan rows can show the previous session's close and move while the bars already have today's.
+  for (const st of d.stocks || []) {
+    const b = d.charts?.[st.symbol]?.daily || [], n = b.length, close = k => b[n - 1 - k]?.[4];
+    if (!close(0)) continue;
+    const move = k => close(k) ? (close(0) / close(k) - 1) * 100 : null;
+    Object.assign(st, { close: close(0), change_1d: move(1), change_1w: move(5), change_1m: move(21) });
+  }
+  setups.data = d;
+  const syms = curList().map(s => s.symbol);
+  if (!syms.includes(setups.sel)) setups.sel = syms[0] ?? null;
+  if (state.page === "setups") renderSetups();
+}
+function setupsFailed(e) {
+  if (state.page !== "setups") return;
+  $("subtitle").textContent = "India · Setups";
+  $("setupList").innerHTML = `<div class="empty" style="padding:8px">Could not load the setups: ${esc(e.message)}</div>`;
+  $("setupChart").innerHTML = "";
+}
+
+const selIndex = () => curList().findIndex(s => s.symbol === setups.sel);
+function selectSetup(i) {
+  const list = curList();
+  if (i < 0 || i >= list.length || list[i].symbol === setups.sel) return;
+  setups.sel = list[i].symbol;
+  renderSetupList(); renderSetupChart();
+  document.querySelector(`.sitem[aria-selected="true"]`)?.scrollIntoView({ block: "nearest" });
+}
+
+function renderSetups() {
+  const d = setups.data;
+  $("notice").innerHTML = "";
+  if (!d?.date) {
+    $("subtitle").textContent = "India · Setups";
+    $("setupList").innerHTML = `<div class="empty" style="padding:8px">No scans stored yet — they appear after the next update.</div>`;
+    $("setupChart").innerHTML = "";
+    return;
+  }
+  const tip = "Prices and the last bar are intraday. The scans themselves are from the close of the date shown.";
+  $("subtitle").innerHTML = (d.live ? `<span class="live" title="${esc(tip)}">LIVE ${esc((d.fetched_at || "").slice(11, 16))}</span>` : "") +
+    esc(`India · setups filtered by ${filtersText(" and ")} · scans of ${fmtDate(d.date)}`);
+  renderSetupList(); renderSetupChart();
+}
+
+function renderSetupList() {
+  const d = setups.data, list = curList();
+  const perScan = (d.setups || []).map(su => `${su.symbols.length} ${su.name}`).join(" · ");
+  const sizes = (d.setups || []).map(su => `${su.name}: ${su.count}`).concat(d.filter ? [`${d.filter.name}: ${d.filter.count}`] : []).join(", ");
+  $("setupList").innerHTML = `<div class="slhd">Setups <span class="nc">(${list.length})</span></div>
+    <div class="slsub" title="${esc(`Stocks per scan after the filters (a stock can be in several). Scan sizes on Trendvue: ${sizes}`)}">${esc(perScan)}</div>` +
+    (list.length ? list.map(st => `<button class="sitem" role="option" data-sym="${esc(st.symbol)}" aria-selected="${st.symbol === setups.sel}">
+      <span class="srow"><span class="sym">${esc(st.symbol)}</span></span>
+      <span class="co">${esc(st.company || "")}</span>
+    </button>`).join("")
+    : `<div class="empty" style="padding:8px">No setup stock passes ${esc(filtersText(" and "))} for this session.</div>`);
+}
+$("setupList").addEventListener("click", e => {
+  const b = e.target.closest(".sitem"); if (!b) return;
+  selectSetup(curList().findIndex(s => s.symbol === b.dataset.sym));
+});
+document.addEventListener("keydown", e => {
+  if (state.page !== "setups" || e.altKey || e.ctrlKey || e.metaKey || e.target.closest?.("input, select, textarea")) return;
+  if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+  e.preventDefault();
+  selectSetup(selIndex() + (e.key === "ArrowDown" ? 1 : -1));
+});
+
+function sectorTag(sector) {
+  const why = setups.strong?.get(sector);
+  return why ? `<span class="sec strong" title="${esc(`Strong sector (India, Breadth page at ${pctLabel()}):\n${why.join("\n")}`)}">${esc(sector)}</span>`
+    : `<span class="sec">${esc(sector || "")}</span>`;
+}
+function renderSetupChart() {
+  const el = $("setupChart"), list = curList(), i = selIndex(), st = list[i];
+  if (!st) { el.innerHTML = `<div class="chempty">Nothing to chart.</div>`; setups.chart = null; return; }
+  const tvSym = `${st.exchange || "NSE"}:${st.symbol.replace(/[^A-Za-z0-9]/g, "_")}`;
+  const stats = [
+    `₹${fmtP(st.close)} <span class="delta ${cls(r1(st.change_1d))}">${fmtPct(st.change_1d)}</span>`,
+    st.mcap != null ? `₹${Math.round(st.mcap).toLocaleString("en-IN")} cr` : "",
+    `1W ${fmtPct(st.change_1w)} · 1M ${fmtPct(st.change_1m)}`,
+  ].filter(Boolean).join(" · ");
+  el.innerHTML = `<div class="chd">
+      <div><a class="csym" href="https://trendvue.in/stocks/${encodeURIComponent(st.symbol)}" target="_blank" rel="noopener" title="Open on Trendvue">${esc(st.symbol)}</a>
+        <span class="co">${esc(st.company || "")}${st.industry ? ` · ${sectorTag(st.sector)} › ${esc(st.industry)}` : ""}</span>
+        ${scansOf(st.symbol).map(su => `<span class="scan" title="In Trendvue's ${esc(su.name)} scan${su.id === "top_movers" && st.movers?.length ? ` (top mover over ${st.movers.join(", ")})` : ""}">${esc(su.name)}${su.id === "top_movers" && st.movers?.length ? ` ${st.movers.join("/")}` : ""}</span>`).join("")}</div>
+      <div class="cnav"><button id="setPrev" aria-label="Previous stock (↑)" title="Previous stock (↑)" ${i <= 0 ? "disabled" : ""}>‹</button>${i + 1} / ${list.length}<button id="setNext" aria-label="Next stock (↓)" title="Next stock (↓)" ${i >= list.length - 1 ? "disabled" : ""}>›</button></div>
+    </div>
+    <div class="cstats">${stats} · <a href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSym)}" target="_blank" rel="noopener">TradingView ↗</a></div>
+    <div class="ctools">
+      <div class="seg" id="freqSeg" role="group" aria-label="Timeframe">${Object.keys(RANGES).map(f =>
+        `<button data-freq="${f}" aria-pressed="${f === setups.freq}">${f === "daily" ? "Daily" : "Weekly"}</button>`).join("")}</div>
+      <div class="seg" id="rangeSeg" role="group" aria-label="Range">${Object.keys(RANGES[setups.freq]).map(r =>
+        `<button data-range="${r}" aria-pressed="${r === setups.range[setups.freq]}">${r}</button>`).join("")}</div>
+    </div>
+    <div class="clegend" id="clegend"></div>
+    <div class="chart" id="chart"></div>`;
+  $("setPrev").onclick = () => selectSetup(i - 1);
+  $("setNext").onclick = () => selectSetup(i + 1);
+  $("freqSeg").onclick = e => { const f = e.target.dataset.freq; if (f && f !== setups.freq) { setups.freq = f; saveChartPrefs(); renderSetupChart(); } };
+  $("rangeSeg").onclick = e => { const r = e.target.dataset.range; if (r) { setups.range[setups.freq] = r; saveChartPrefs(); renderSetupChart(); } };
+  drawChart();
+}
+
+// OHLC bars on a log price scale with EMA 20/50/200 and a volume pane, as on Trendvue. Hover for a bar's values.
+function drawChart() {
+  const el = $("chart"); if (!el) return;
+  const st = curList()[selIndex()];
+  const F = setups.data.bar_fields || ["date", "open", "high", "low", "close", "volume", "ema20", "ema50", "ema200"];
+  const all = ((setups.data.charts || {})[st.symbol] || {})[setups.freq] || [];
+  const bars = all.slice(-RANGES[setups.freq][setups.range[setups.freq]]).map(r => Object.fromEntries(F.map((k, j) => [k, r[j]])));
+  const prevClose = j => j > 0 ? bars[j - 1].close : (all.length > bars.length ? all[all.length - bars.length - 1][4] : null);
+  if (!bars.length) { el.innerHTML = `<div class="chempty">No chart data for ${esc(st.symbol)}.</div>`; $("clegend").innerHTML = ""; return; }
+
+  const W = Math.max(280, el.clientWidth);
+  const H = W < 520 ? 300 : Math.round(Math.max(380, Math.min(W * 0.75, innerHeight - (el.getBoundingClientRect().top + scrollY) - 40)));
+  const M = { t: 8, r: 62, b: 22, l: 4 }, iw = W - M.l - M.r, ih = H - M.t - M.b;
+  const hasVol = bars.some(b => b.volume > 0), gap = 10;
+  const volH = hasVol ? Math.round(ih * 0.2) : 0, ph = ih - (hasVol ? volH + gap : 0);
+  const RIGHT_GAP = 5;  // empty bar slots between the last bar and the price axis
+  const n = bars.length, step = iw / (n + RIGHT_GAP), bw = Math.max(1, Math.min(step * 0.7, 14));
+  const x = j => M.l + step * (j + 0.5);
+  let lo = Infinity, hi = -Infinity;
+  for (const b of bars) for (const k of ["low", "high", "ema20", "ema50", "ema200"])
+    if (b[k] > 0) { lo = Math.min(lo, b[k]); hi = Math.max(hi, b[k]); }
+  const pad = (Math.log(hi) - Math.log(lo)) * 0.05 || 0.01, l0 = Math.log(lo) - pad, l1 = Math.log(hi) + pad;
+  const y = v => M.t + ph * (1 - (Math.log(v) - l0) / (l1 - l0));
+  const yInv = py => Math.exp(l0 + (1 - (py - M.t) / ph) * (l1 - l0));
+  const vmax = Math.max(1, ...bars.map(b => b.volume || 0));
+  const vy = v => M.t + ph + gap + volH * (1 - (v || 0) / vmax);
+  const f1 = v => v.toFixed(1);
+
+  // price grid: evenly spaced on the log scale, rounded to a readable step
+  const nice = v => v < 1 ? .05 : v < 2 ? .1 : v < 5 ? .25 : v < 10 ? .5 : v < 100 ? 5 : v < 1e3 ? 10 : v < 1e4 ? 50 : v < 1e5 ? 100 : 500;
+  const ticks = [...new Set(Array.from({ length: 6 }, (_, k) => { const v = Math.exp(l0 + (l1 - l0) * (k + 0.5) / 6), s = nice(v); return +(Math.round(v / s) * s).toFixed(2); }))]
+    .filter(v => v > Math.exp(l0) && v < Math.exp(l1));
+  let svg = ticks.map(v => `<line x1="${M.l}" x2="${M.l + iw}" y1="${f1(y(v))}" y2="${f1(y(v))}" stroke="var(--grid)"/>` +
+    `<text x="${M.l + iw + 6}" y="${f1(y(v) + 4)}">${nice(v) >= 1 ? Math.round(v).toLocaleString("en-IN") : fmtP(v)}</text>`).join("");
+
+  // date axis: years first, then months where they fit
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const cand = [];
+  for (let j = 1; j < n; j++) {
+    const a = bars[j - 1].date, b = bars[j].date;
+    if (a.slice(0, 7) !== b.slice(0, 7)) cand.push({ j, year: a.slice(0, 4) !== b.slice(0, 4), label: a.slice(0, 4) !== b.slice(0, 4) ? b.slice(0, 4) : MON[+b.slice(5, 7) - 1] });
+  }
+  const placed = [], fits = j => placed.every(p => Math.abs(x(p.j) - x(j)) >= 46) && x(j) > M.l + 14 && x(j) < M.l + iw - 14;
+  for (const c of cand.filter(c => c.year)) if (fits(c.j)) placed.push(c);
+  for (const c of cand.filter(c => !c.year)) if (fits(c.j)) placed.push(c);
+  svg += placed.map(c => `<line x1="${f1(x(c.j))}" x2="${f1(x(c.j))}" y1="${M.t}" y2="${M.t + ih}" stroke="var(--grid)" stroke-opacity=".6"/>` +
+    `<text x="${f1(x(c.j))}" y="${H - 6}" text-anchor="middle"${c.year ? ` style="fill:var(--ink-2)"` : ""}>${c.label}</text>`).join("");
+
+  // volume, then OHLC bars (high-low line, open tick left, close tick right), then EMAs on top
+  if (hasVol) {
+    const d = bars.map((b, j) => b.volume
+      ? `M${f1(x(j) - bw / 2)} ${f1(vy(b.volume))}h${f1(bw)}V${f1(vy(0))}h${f1(-bw)}Z` : "").join("");
+    svg += `<path d="${d}" fill="var(--price-bar)" fill-opacity=".22"/>`;
+  }
+  const tw = Math.max(1, Math.min(step * 0.4, 6));
+  let ohlc = "";
+  bars.forEach((b, j) => {
+    if (!(b.low > 0)) return;
+    const cx = f1(x(j));
+    ohlc += `M${cx} ${f1(y(b.high))}V${f1(y(b.low))}M${f1(x(j) - tw)} ${f1(y(b.open))}H${cx}M${cx} ${f1(y(b.close))}H${f1(x(j) + tw)}`;
+  });
+  svg += `<path d="${ohlc}" stroke="var(--price-bar)" stroke-width="${step >= 5 ? 1.5 : 1}" fill="none"/>`;
+  for (const [k] of EMAS) {
+    let d = "", pen = false;
+    bars.forEach((b, j) => { if (b[k] > 0) { d += `${pen ? "L" : "M"}${f1(x(j))} ${f1(y(b[k]))}`; pen = true; } else pen = false; });
+    svg += `<path d="${d}" stroke="var(--${k})" stroke-width="1.5" fill="none" stroke-linejoin="round"/>`;
+  }
+  // last close tag on the price axis
+  const last = bars[n - 1];
+  svg += `<g class="tag"><rect x="${M.l + iw + 2}" y="${f1(y(last.close) - 9)}" width="${M.r - 4}" height="18" rx="4"/>` +
+    `<text x="${M.l + iw + 6}" y="${f1(y(last.close) + 4)}">${fmtP(last.close)}</text></g>`;
+  // crosshair (hidden until hover) and the hover target
+  svg += `<g id="xhair" visibility="hidden"><line class="xh" id="xhV" y1="${M.t}" y2="${M.t + ih}"/><line class="xh" id="xhH" x1="${M.l}" x2="${M.l + iw}"/>` +
+    `<g class="tag"><rect id="xhR" x="${M.l + iw + 2}" width="${M.r - 4}" height="18" rx="4"/><text id="xhT" x="${M.l + iw + 6}"></text></g></g>` +
+    `<rect id="xhit" x="${M.l}" y="${M.t}" width="${iw}" height="${ih}" fill="transparent"/>`;
+  el.innerHTML = `<svg viewBox="0 0 ${W} ${H}" height="${H}" role="img" aria-label="${esc(`${st.symbol} ${setups.freq} OHLC bar chart, ${setups.range[setups.freq]}, with EMA 20, 50 and 200`)}">${svg}</svg>`;
+
+  const legend = j => {
+    const b = bars[j], pc = prevClose(j), chg = pc ? (b.close / pc - 1) * 100 : null;
+    $("clegend").innerHTML = `<span>${esc(setups.freq === "weekly" ? "Week of " + fmtBarDate(b.date) : fmtBarDate(b.date))}</span>` +
+      `<span><span class="k">O</span> ${fmtP(b.open)} <span class="k">H</span> ${fmtP(b.high)} <span class="k">L</span> ${fmtP(b.low)} <span class="k">C</span> ${fmtP(b.close)}` +
+      (chg == null ? "" : ` <span class="delta ${cls(r1(chg))}">${fmtPct(chg)}</span>`) + `</span>` +
+      (hasVol ? `<span><span class="k">Vol</span> ${fmtV(b.volume)}</span>` : "") +
+      EMAS.map(([k, l]) => `<span><span class="sw" style="background:var(--${k})"></span>${l}</span>`).join("");  // key only, no values
+  };
+  legend(n - 1);
+  const svgEl = el.querySelector("svg"), hit = $("xhit"), xh = $("xhair");
+  const move = e => {
+    const r = svgEl.getBoundingClientRect(), px = (e.clientX - r.left) * W / r.width, py = (e.clientY - r.top) * H / r.height;
+    const j = Math.max(0, Math.min(n - 1, Math.floor((px - M.l) / step)));
+    xh.setAttribute("visibility", "visible");
+    $("xhV").setAttribute("x1", x(j)); $("xhV").setAttribute("x2", x(j));
+    const inPrice = py >= M.t && py <= M.t + ph;
+    $("xhH").setAttribute("visibility", inPrice ? "visible" : "hidden");
+    $("xhR").parentNode.setAttribute("visibility", inPrice ? "visible" : "hidden");
+    if (inPrice) {
+      $("xhH").setAttribute("y1", py); $("xhH").setAttribute("y2", py);
+      $("xhR").setAttribute("y", py - 9); $("xhT").setAttribute("y", py + 4); $("xhT").textContent = fmtP(yInv(py));
+    }
+    legend(j);
+  };
+  hit.addEventListener("pointermove", move);
+  hit.addEventListener("pointerdown", move);
+  hit.addEventListener("pointerleave", () => { xh.setAttribute("visibility", "hidden"); legend(n - 1); });
+}
+let chartResizeFrame = 0, chartWidth = 0;
+new ResizeObserver(() => {
+  const w = $("setupChart").clientWidth;
+  if (state.page !== "setups" || !$("chart") || w === chartWidth) return;
+  chartWidth = w; cancelAnimationFrame(chartResizeFrame); chartResizeFrame = requestAnimationFrame(drawChart);
+}).observe($("setupChart"));
+let chartWinH = innerHeight;  // the chart fills the window's height: redraw when that changes
+addEventListener("resize", () => {
+  if (innerHeight === chartWinH) return;
+  chartWinH = innerHeight;
+  if (state.page === "setups" && $("chart")) { cancelAnimationFrame(chartResizeFrame); chartResizeFrame = requestAnimationFrame(drawChart); }
+});
 renderMetricSeg();
-loadMarkets().then(load).catch(e => { $("subtitle").textContent = "Could not reach the server: " + e.message; });
+loadMarkets().then(load).catch(e => { if (state.page !== "setups") $("subtitle").textContent = "Could not reach the server: " + e.message; });
+if (state.page === "setups") loadSetups().catch(setupsFailed);
 // While a live session is on screen, pick up the server's periodic live refreshes.
-setInterval(() => { if (state.data?.live) load().catch(() => {}); }, 120000);
+setInterval(() => {
+  if (state.page === "setups") { if (setups.data?.live) loadSetups().catch(() => {}); }
+  else if (state.data?.live) load().catch(() => {});
+}, 120000);
 </script>
 </body>
 </html>

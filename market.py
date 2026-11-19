@@ -4,6 +4,8 @@ market hours), store snapshots in SQLite (one database per market), and compare 
 Usage (MARKET = in | us, default in; MARKETS = comma-separated, e.g. in,us):
     python3 market.py snapshot [MARKETS]      # fetch now: live (provisional) during market hours, final after the close
     python3 market.py auto [MARKETS]          # fetch each market only if due (market hours, or after the close until final)
+                                              # (with India, both also fetch the Setups scans: see take_setups)
+    python3 market.py setups                  # fetch the Setups scans (India) now
     python3 market.py compare [METRIC] [MARKET]   # print latest vs previous in the terminal
     python3 market.py export DIR [MARKETS]    # static site (index.html + data/<market>/*.json); default: markets with data
     python3 market.py next-wait [MARKETS]     # seconds until the next update is due (used by the GitHub workflow)
@@ -37,6 +39,15 @@ MIN_GROUP_STOCKS = 3  # sectors/industries need at least this many stocks in the
 # A liquid stock's daily bars (the last one is live during market hours) tell us which session each source reflects.
 PROBE_SYMBOL = "RELIANCE"
 PROBE_URL = f"https://trendvue.in/api/eod/{PROBE_SYMBOL}?days=5"
+EOD_URL = "https://trendvue.in/api/eod/"  # + symbol; daily bars (?timeframe=weekly for weekly) with EMA 20/50/200
+# Setups page (India): each of the SETUP_SCANS Trendvue daily scans, keeping only the stocks that are also in the
+# SETUP_FILTER scan, in the filter scan's order (Tight Consolidation: tightest first).
+SCANS_URL = "https://trendvue.in/api/daily_scans/"  # + scan name + "/enriched"
+SETUP_SCANS = {"high_tight_flags_stocks": "High Tight Flag", "near_ATH": "Near All-Time High", "top_movers": "Top Movers"}
+SETUP_FILTER = ("consolidation", "Tight Consolidation")
+SETUP_ABOVE_EMA = "ema50"  # second filter: last close above this EMA (ema20/ema50/ema200), from the daily bars; None = off
+MOVER_PERIODS = ("1d", "1w", "1m", "3m", "1y")  # Top Movers rows flag the periods they lead: is_1d, is_1w, ...
+CHART_BARS = 260  # bars per chart and timeframe: covers Trendvue's longest ranges (daily 1Y = 252, weekly 5Y = 260)
 REFRESH_MIN = 5  # minutes between live updates (GitHub workflow and local server)
 LIVE_PROBE_TOLERANCE = 1.0  # % points between the live 1D and today's still-forming bar (refreshed on separate cycles)
 
@@ -98,6 +109,14 @@ CREATE TABLE IF NOT EXISTS stock_values (
     price              REAL,                -- price used for pct_from_52w_high (live price in a provisional snapshot)
     high_52w           REAL,
     PRIMARY KEY (snapshot_id, symbol, industry)
+);
+CREATE TABLE IF NOT EXISTS setups (            -- India: each SETUP_SCANS scan filtered by SETUP_FILTER
+    snap_date   TEXT PRIMARY KEY,              -- session the scans reflect
+    fetched_at  TEXT NOT NULL,
+    data_hash   TEXT NOT NULL,
+    live        INTEGER NOT NULL DEFAULT 0,    -- fetched during market hours: prices and the last bar are intraday
+    data        TEXT NOT NULL,                 -- JSON: the setups (scan sizes, symbols) and their stocks
+    charts      TEXT                           -- JSON: daily and weekly bars per stock; latest session only
 );
 """
 
@@ -462,6 +481,141 @@ def take_market_snapshot(market):
         con.close()
 
 
+BAR_FIELDS = ("date", "open", "high", "low", "close", "volume", "ema20", "ema50", "ema200")
+
+
+def _bars(symbol, timeframe="daily", n=CHART_BARS):
+    """Trendvue's bars for a symbol as compact rows [date, open, high, low, close, volume, ema20, ema50, ema200].
+    During market hours the last daily (and weekly) bar is still forming."""
+    q = f"?days={n}" + ("&timeframe=weekly" if timeframe == "weekly" else "")
+    rows = fetch_json(EOD_URL + urllib.parse.quote(symbol, safe="") + q) or []
+    return [[r.get("date", "")[:10], *(int(r[k]) if k == "volume" and r.get(k) is not None else r.get(k)
+                                       for k in BAR_FIELDS[1:])] for r in rows][-n:]
+
+
+def _bar_session(bars, d1):
+    """Date of the latest daily bar whose day move matches `d1` (a scan row's 1D %), or None.
+    Scan rows carry live prices during market hours, but their 1D is the session the scan was run on."""
+    if d1 is None:
+        return None
+    for i in range(len(bars) - 1, 0, -1):
+        if bars[i][4] and bars[i - 1][4] and abs(_pct_change(bars[i][4], bars[i - 1][4]) - d1) <= 0.05:
+            return bars[i][0]
+    return None
+
+
+def take_setups(con, now=None):
+    """Fetch the SETUP_SCANS scans and the SETUP_FILTER scan, and store each setup (its scan's stocks that are also in
+    the filter scan and, with SETUP_ABOVE_EMA, close above that EMA) with the charts of every stock in any setup,
+    under the session the scans reflect.
+    Unchanged data (same session, same prices and bars) is not stored again."""
+    lists = {}
+    for name in (*SETUP_SCANS, SETUP_FILTER[0]):
+        lists[name] = fetch_json(f"{SCANS_URL}{name}/enriched") or []
+        time.sleep(REQUEST_GAP)
+    filt = lists[SETUP_FILTER[0]]
+    setup_list = []
+    for name, label in SETUP_SCANS.items():
+        members = {r["symbol"] for r in lists[name]}
+        setup_list.append({"id": name, "name": label, "count": len(lists[name]),
+                           "symbols": [r["symbol"] for r in filt if r["symbol"] in members]})
+    in_any = {sym for st in setup_list for sym in st["symbols"]}
+    movers = {r["symbol"]: [p.upper() for p in MOVER_PERIODS if r.get(f"is_{p}")] for r in lists.get("top_movers", [])}
+
+    known = {}  # exchange, sector and industry from the latest India snapshot that has the stock
+    for r in con.execute("SELECT v.symbol, v.exchange, v.sector, v.industry FROM stock_values v"
+                         " JOIN snapshots s ON s.id = v.snapshot_id ORDER BY s.snap_date"):
+        known[r["symbol"]] = dict(r)
+
+    stocks, charts = [], {}
+    for r in filt:  # the filter scan's row: it has the consolidation columns
+        sym = r["symbol"]
+        if sym not in in_any:
+            continue
+        charts[sym] = {"daily": _bars(sym)}
+        time.sleep(REQUEST_GAP)
+        charts[sym]["weekly"] = _bars(sym, "weekly")
+        time.sleep(REQUEST_GAP)
+        k = known.get(sym, {})
+        stocks.append({"symbol": sym, "company": r.get("company_name"), "exchange": k.get("exchange") or "NSE",
+                       "sector": k.get("sector"), "industry": k.get("industry"),
+                       "close": r.get("close"), "change_1d": r.get("change"), "change_1w": r.get("1W"),
+                       "change_1m": r.get("1M"), "dist": r.get("pct_from_52w_high"), "ath": r.get("pct_from_ath"),
+                       "rs_rating": r.get("rs_rating"), "consolidation_days": r.get("consolidation_days"),
+                       "tightness": r.get("tightness"), "mcap": _mcap_cr(r), "movers": movers.get(sym)})
+
+    # Date the scans by a stock's 1D move: a setup stock, else the first stock of any scan.
+    probe = stocks[0]["symbol"] if stocks else next((rows[0]["symbol"] for rows in lists.values() if rows), None)
+    snap_date = None
+    if probe:
+        row = next(r for rows in lists.values() for r in rows if r["symbol"] == probe)
+        snap_date = _bar_session(charts[probe]["daily"] if probe in charts else _bars(probe, n=10), row.get("1D"))
+    if not snap_date:  # empty scans, or no match: the latest final India session
+        row = con.execute("SELECT MAX(snap_date) AS d FROM snapshots WHERE provisional = 0").fetchone()
+        snap_date = row["d"] or market_now("in", now).strftime("%Y-%m-%d")
+
+    filters = [SETUP_FILTER[1]]
+    if SETUP_ABOVE_EMA:  # last close above the EMA, from the bars (live during market hours, like the chart)
+        col, flag = BAR_FIELDS.index(SETUP_ABOVE_EMA), f"above_ema_{SETUP_ABOVE_EMA[3:]}"
+        rows = {r["symbol"]: r for r in filt}
+
+        def above(sym):
+            last = (charts[sym]["daily"] or [None])[-1]
+            if last and last[4] is not None and last[col] is not None:
+                return last[4] > last[col]
+            return bool(rows[sym].get(flag))  # no bars: the scan row's flag (as of the scan's session)
+
+        keep = {st["symbol"] for st in stocks if above(st["symbol"])}
+        for st in setup_list:
+            st["symbols"] = [sym for sym in st["symbols"] if sym in keep]
+        stocks = [st for st in stocks if st["symbol"] in keep]
+        charts = {sym: c for sym, c in charts.items() if sym in keep}
+        filters.append(f"above EMA {SETUP_ABOVE_EMA[3:]}")
+
+    live = in_market_hours(now, "in")
+    data = {"filter": {"id": SETUP_FILTER[0], "name": SETUP_FILTER[1], "count": len(filt)}, "filters": filters,
+            "setups": setup_list, "stocks": stocks}
+    digest = _digest({"data": data, "charts": charts, "live": live})
+    have = con.execute("SELECT data_hash FROM setups WHERE snap_date = ?", (snap_date,)).fetchone()
+    if have and have["data_hash"] == digest:
+        return {"stored": False, "date": snap_date, "reason": "Setups already up to date."}
+    with con:
+        con.execute("UPDATE setups SET charts = NULL WHERE snap_date < ?", (snap_date,))  # charts: latest only
+        con.execute("INSERT OR REPLACE INTO setups (snap_date, fetched_at, data_hash, live, data, charts)"
+                    " VALUES (?, ?, ?, ?, ?, ?)",
+                    (snap_date, datetime.now().isoformat(timespec="seconds"), digest, int(live),
+                     json.dumps(data), json.dumps(charts, separators=(",", ":"))))
+    return {"stored": True, "date": snap_date, "live": live, "stocks": len(stocks),
+            "setups": {st["name"]: len(st["symbols"]) for st in setup_list}}
+
+
+def setups_due(con, now=None):
+    """Whether the setups should be fetched: every time during India's market hours (live prices and bars),
+    otherwise when none are stored, the stored ones were fetched live, or they're older than the latest
+    stored India session (Trendvue runs its scans after the close)."""
+    if in_market_hours(now, "in"):
+        return True
+    row = con.execute("SELECT snap_date, live FROM setups ORDER BY snap_date DESC LIMIT 1").fetchone()
+    if not row or row["live"]:
+        return True
+    latest = con.execute("SELECT MAX(snap_date) AS d FROM snapshots").fetchone()["d"]
+    return bool(latest and row["snap_date"] < latest)
+
+
+def setups(con):
+    """The latest setups with their charts, for the page; {"date": None} if none are stored."""
+    row = con.execute("SELECT * FROM setups ORDER BY snap_date DESC LIMIT 1").fetchone()
+    if not row:
+        return {"date": None, "setups": [], "stocks": []}
+    data = json.loads(row["data"])
+    if "setups" not in data:  # stored when there was one setup (scans = [the scan, the filter])
+        data = {"filter": data["scans"][-1], "stocks": data["stocks"],
+                "setups": [{**data["scans"][0], "symbols": [st["symbol"] for st in data["stocks"]]}]}
+    data.setdefault("filters", [data["filter"]["name"]])  # stored before the EMA filter
+    return {"date": row["snap_date"], "fetched_at": row["fetched_at"], "live": bool(row["live"]),
+            **data, "bar_fields": BAR_FIELDS, "charts": json.loads(row["charts"] or "{}")}
+
+
 def markets_with_data():
     out = []
     for m, cfg in MARKETS.items():
@@ -498,6 +652,10 @@ def export_site(out_dir, markets):
             (data_dir / f"{d}.json").write_text(json.dumps(doc, separators=(",", ":")))
         (data_dir / "index.json").write_text(json.dumps({
             "dates": dates, "live_dates": live_dates(con), "generated_at": datetime.now().isoformat(timespec="seconds")}))
+        if market == "in":  # the Setups page
+            setup = setups(con)
+            if setup["date"]:
+                (data_root / "setups.json").write_text(json.dumps(setup, separators=(",", ":")))
         con.close()
         counts[market] = len(dates)
     (data_root / "markets.json").write_text(json.dumps([{"id": m, "name": MARKETS[m]["name"]} for m in markets]))
@@ -548,9 +706,24 @@ if __name__ == "__main__":
                     continue
             print(f"[{market}]", json.dumps(res))
             changed = changed or res["stored"]
+        if "in" in _markets_arg(arg, "in"):  # the Setups page (India scans), independent of India's own fetch
+            with closing(connect("in")) as con:
+                if cmd == "auto" and not setups_due(con):
+                    print("[setups] Not due: already have the latest scans.")
+                else:
+                    try:
+                        res = take_setups(con)
+                        print("[setups]", json.dumps(res))
+                        changed = changed or res["stored"]
+                    except Exception as e:
+                        print(f"[setups] failed: {e}", file=sys.stderr)
+                        failed.append("setups")
         _github_output(changed=str(changed).lower())
         if failed:
             sys.exit(f"Fetch failed for {failed}")
+    elif cmd == "setups":
+        with closing(connect("in")) as con:
+            print(json.dumps(take_setups(con)))
     elif cmd == "next-wait":
         print(next_wait_seconds(_markets_arg(arg, "in")))
     elif cmd == "export":

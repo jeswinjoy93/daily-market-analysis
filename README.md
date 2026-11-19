@@ -96,6 +96,53 @@ its "pts" unit to leave more room.
 - The All tables still list groups that are too small to rank.
 - Restart the server after changing a setting. Stored data never needs re-fetching, because the rules are applied when the dashboard reads the data.
 
+## Setups page
+
+The **Breadth / Setups** switch at the top opens **Setups** (also at `…/#setups`): the stocks in any of three Trendvue
+daily scans that also pass two filters, **each listed once**:
+
+| Scan | Trendvue scan |
+|---|---|
+| **High Tight Flag** | High Tight Flag Stocks (`high_tight_flags_stocks`) |
+| **Near All-Time High** | Stocks Near All-Time Highs (`near_ATH`) |
+| **Top Movers** | Top Movers (`top_movers`) |
+
+1. **Tight Consolidation:** the stock is also in Trendvue's Tight Consolidation scan (not Consolidation Breakout).
+2. **Above EMA 50:** its last close is above its 50-day EMA, taken from the same daily bars as the chart (so it's live
+   during market hours, like the chart's EMA line). Trendvue's own `above_ema_50` flag is used only if a stock has no bars.
+
+Laid out like Trendvue's watchlist, using the full window width (the chart also fills the window's height):
+
+- **Left:** the stocks in Tight Consolidation's order (tightest first), each with its company name. The header shows how many pass the filters per scan
+  (a stock can count in several); hover it for each scan's size on Trendvue.
+- **Right:** the selected stock's chart: black OHLC bars (open tick left, close tick right) on a log scale with
+  EMA 20/50/200 and volume, **Daily** (1M/3M/6M/1Y) or **Weekly** (6M/1Y/3Y/5Y), remembered between visits. Hover for a
+  bar's values. Above it: price, 1D move, market cap and 1W/1M moves. The symbol links to its Trendvue page, plus a
+  TradingView link.
+- **Scans:** after the sector and industry, a tag for each scan the stock is in; Top Movers adds the periods it leads,
+  e.g. `Top Movers 1Y`.
+- **Strong sectors:** the sector name above the chart is shaded green when it's one of India's strong sectors on the
+  Breadth page's Strong view, at the selected % (the *Top 5 strong sectors today* and *Top 5 strong sectors* cards).
+  Hover it for which card and its numbers.
+- **Flip** between stocks with **↑ / ↓** or the **‹ ›** buttons.
+- **Copy for TradingView / ↓ .txt** export the list as one section, e.g.
+  `###SETUPS - TIGHT CONSOLIDATION + ABOVE EMA 50 (20),NSE:SHAILY,…`.
+
+The lists are Trendvue's as-is: the dashboard's market-cap universe rule doesn't apply here. The scans are run after each
+close, so during market hours they're still the previous session's (the subtitle says which) while the prices and the
+last bar are live.
+
+**How it's fetched** (`take_setups` in `market.py`): one request per scan (`/api/daily_scans/<scan>/enriched`, four in
+all), then daily and weekly bars for each stock in any scan that's also in Tight Consolidation, once per stock
+(`/api/eod/<symbol>?days=260[&timeframe=weekly]`, with Trendvue's EMAs; about 20 stocks, so ~40 requests ~1s apart).
+The scans carry no date, so they're dated like the India snapshot: a stock's 1D move is matched to its daily bars.
+It runs with every India `snapshot`/`auto` (also `python3 market.py setups`, or on its own in the local server's loop),
+and is due during India's market hours, then until the scans of the latest stored session are in.
+Results are stored per session in the India database's `setups` table (charts for the latest session only) and
+exported as `data/setups.json` (~650 KB, ~240 KB gzipped). A setups failure doesn't stop the India or US fetch.
+To change the scans, edit `SETUP_SCANS` / `SETUP_FILTER` (scan ids are in `https://trendvue.in/api/daily_scans`);
+`SETUP_ABOVE_EMA` sets the EMA rule (`"ema20"`, `"ema50"`, `"ema200"`, or `None` to turn it off).
+
 ## TradingView export
 
 **Copy for TradingView** and **↓ .txt** export the stocks in the current view, at the selected X%, as a watchlist
@@ -187,6 +234,7 @@ The databases are `data/market.db` (India) and `data/market_us.db` (US). Set `MA
 |---|---|
 | `snapshots` | One row per trading session (`snap_date`, `fetched_at`, `provisional` = 1 for live data) |
 | `segment_values` | India only: Trendvue's numbers per sector/industry for all five thresholds, plus the full raw JSON row |
+| `setups` | India only: per session, each setup's scan size and stocks after the filters (JSON), plus their chart bars for the latest session |
 | `stock_values` | Per stock per session: symbol, company, industry, sector, exchange, `pct_from_52w_high`, `change_1d`/`_1w`/`_1m`, `market_cap_cr` (₹ crore; US$ million for the US), plus the `price` and `high_52w` used |
 
 ## Files
@@ -195,5 +243,5 @@ The databases are `data/market.db` (India) and `data/market_us.db` (US). Set `MA
 - `us.py`: the US fetch from TradingView's screener.
 - `server.py`: the web server and the automatic live and end-of-day fetches.
 - `.github/workflows/update.yml`: the scheduled GitHub Pages build.
-- `static/index.html`: the dashboard and the TradingView export.
+- `static/index.html`: the dashboard (Breadth and Setups pages) and the TradingView export.
 - `install_schedule.sh`: the optional launchd schedule.

@@ -4,7 +4,8 @@
 
 While running, it also fetches each market automatically on its weekdays: a live (provisional) snapshot
 every LIVE_REFRESH_MIN minutes during that market's hours, then every 30 min after its close until that
-day's final data is stored (see market.MARKETS and market.snapshot_due).
+day's final data is stored (see market.MARKETS and market.snapshot_due). The Setups scans (India) are
+fetched on the same loop when due (market.setups_due).
 """
 import json
 import os
@@ -31,6 +32,12 @@ def snapshot(m="in"):
         return market.take_market_snapshot(m)
     finally:
         FETCH_LOCK.release()
+
+
+def refresh_setups():
+    """Fetch the Setups scans (India); shares the fetch lock, since both use Trendvue's rate limit."""
+    with FETCH_LOCK, closing(market.connect("in")) as con:
+        return market.take_setups(con)
 
 
 def _market(q):
@@ -65,6 +72,18 @@ class Handler(SimpleHTTPRequestHandler):
                 return self._json(res)
             except ValueError as e:
                 return self._json({"error": str(e)}, 400)
+        if url.path == "/api/setups":
+            try:
+                with closing(market.connect("in")) as con:
+                    res = market.setups(con)
+                if not res["date"]:  # nothing stored yet: fetch now
+                    refresh_setups()
+                    with closing(market.connect("in")) as con:
+                        res = market.setups(con)
+                return self._json(res)
+            except Exception as e:
+                traceback.print_exc()
+                return self._json({"error": f"Setups fetch failed: {e}"}, 502)
         return super().do_GET()
 
     def do_POST(self):
@@ -94,6 +113,13 @@ def auto_snapshot_loop():
             except Exception as e:
                 print(f"[auto {m}] snapshot failed:", e, flush=True)
             busy = busy or market.in_market_hours(market=m)
+        try:
+            with closing(market.connect("in")) as con:
+                due = market.setups_due(con)
+            if due:
+                print("[auto setups]", refresh_setups(), flush=True)
+        except Exception as e:
+            print("[auto setups] failed:", e, flush=True)
         time.sleep(LIVE_REFRESH_MIN * 60 if busy else 1800)
 
 
