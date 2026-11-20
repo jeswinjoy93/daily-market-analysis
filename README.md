@@ -113,7 +113,13 @@ daily scans that also pass two filters, **each listed once**:
 
 Laid out like Trendvue's watchlist, using the full window width (the chart also fills the window's height):
 
-- **Left:** the stocks in Tight Consolidation's order (tightest first), each with its company name. The header shows how many there are.
+- **Left:** the stocks, newest in the setups first, each with its company name and its **age** in the setups (stocks of
+  the same age in Tight Consolidation's order, tightest first). The header shows how many there are. Age is the number
+  of sessions since the stock entered the list, counting the entry session and the latest one: **New** on the session
+  it entered, then `2d`, `3d`, … Hover for the date it entered.
+  A stock that drops out and comes back starts again at New. Age is worked out from the stored sessions (see below), so it
+  counts from the first session stored with the current scans and filters: changing `SETUP_SCANS`, `SETUP_FILTER` or
+  `SETUP_ABOVE_EMA` starts every stock again at New.
 - **Right:** the selected stock's chart: black OHLC bars (open tick left, close tick right) on a log scale with
   EMA 20/50/200 and volume, **Daily** (1M/3M/6M/1Y) or **Weekly** (6M/1Y/3Y/5Y), remembered between visits. Hover for a
   bar's values. Above it: price, 1D move and market cap. The symbol links to its Trendvue page, plus a
@@ -137,7 +143,9 @@ all), then daily and weekly bars for each stock in any scan that's also in Tight
 The scans carry no date, so they're dated like the India snapshot: a stock's 1D move is matched to its daily bars.
 It runs with every India `snapshot`/`auto` (also `python3 market.py setups`, or on its own in the local server's loop),
 and is due during India's market hours, then until the scans of the latest stored session are in.
-Results are stored per session in the India database's `setups` table (charts for the latest session only) and
+Results are stored per session in the India database's `setups` table (charts for the latest session only; the
+earlier sessions' stock lists give each stock's age: `setups()` walks back through them while the stock is still in
+them, then counts its daily bars from that session on, so a session with no stored fetch still counts) and
 exported as `data/setups.json` (~650 KB, ~240 KB gzipped). A setups failure doesn't stop the India or US fetch.
 To change the scans, edit `SETUP_SCANS` / `SETUP_FILTER` (scan ids are in `https://trendvue.in/api/daily_scans`);
 `SETUP_ABOVE_EMA` sets the EMA rule (`"ema20"`, `"ema50"`, `"ema200"`, or `None` to turn it off).

@@ -602,8 +602,34 @@ def setups_due(con, now=None):
     return bool(latest and row["snap_date"] < latest)
 
 
+def _setup_key(data):
+    """What defines the setups: their scans and filters. Rows stored under another definition don't count toward age."""
+    return sorted(st["id"] for st in data.get("setups", [])), data.get("filters")
+
+
+def _setup_since(con, latest, data):
+    """For each stock in the latest setups (stored for session `latest`): (the first session of its current unbroken
+    run in the stored setups, how many stored sessions that run has); (latest, 1) = it entered with the latest scans."""
+    since = {st["symbol"]: (latest, 1) for st in data["stocks"]}
+    running, key = set(since), _setup_key(data)
+    for r in con.execute("SELECT snap_date, data FROM setups WHERE snap_date < ? ORDER BY snap_date DESC", (latest,)):
+        prev = json.loads(r["data"])
+        if not running or _setup_key(prev) != key:
+            break
+        there = {st["symbol"] for st in prev["stocks"]}
+        for sym in list(running):
+            if sym in there:
+                since[sym] = (r["snap_date"], since[sym][1] + 1)
+            else:
+                running.discard(sym)
+    return since
+
+
 def setups(con):
-    """The latest setups with their charts, for the page; {"date": None} if none are stored."""
+    """The latest setups with their charts, for the page; {"date": None} if none are stored.
+    Each stock has `since`, the first session of its current run in the setups, and `age`, its sessions in the
+    setups from `since` to the latest, both counted (1 = new). Age is counted on the stock's daily bars, so a
+    session without a stored fetch still counts."""
     row = con.execute("SELECT * FROM setups ORDER BY snap_date DESC LIMIT 1").fetchone()
     if not row:
         return {"date": None, "setups": [], "stocks": []}
@@ -612,8 +638,14 @@ def setups(con):
         data = {"filter": data["scans"][-1], "stocks": data["stocks"],
                 "setups": [{**data["scans"][0], "symbols": [st["symbol"] for st in data["stocks"]]}]}
     data.setdefault("filters", [data["filter"]["name"]])  # stored before the EMA filter
-    return {"date": row["snap_date"], "fetched_at": row["fetched_at"], "live": bool(row["live"]),
-            **data, "bar_fields": BAR_FIELDS, "charts": json.loads(row["charts"] or "{}")}
+    charts, latest = json.loads(row["charts"] or "{}"), row["snap_date"]
+    since = _setup_since(con, latest, data)
+    for st in data["stocks"]:
+        first, runs = since[st["symbol"]]
+        sessions = sum(1 for b in charts.get(st["symbol"], {}).get("daily") or [] if first <= b[0] <= latest)
+        st.update(since=first, age=sessions or runs)
+    return {"date": latest, "fetched_at": row["fetched_at"], "live": bool(row["live"]),
+            **data, "bar_fields": BAR_FIELDS, "charts": charts}
 
 
 def markets_with_data():

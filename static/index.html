@@ -122,6 +122,8 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
 .setups { display: grid; grid-template-columns: 250px minmax(0, 1fr); padding: 0; overflow: hidden; }
 .slist { border-right: 1px solid var(--border); height: 0; min-height: 100%; overflow-y: auto; padding: 12px 8px; }
 .slhd { padding: 0 8px 10px; font-weight: 600; font-size: 15px; }
+.sitem .age { font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.sitem .age.new { padding: 0 6px; border-radius: 999px; background: var(--ink); color: var(--surface); font-weight: 650; letter-spacing: .03em; }
 .sitem { display: block; width: 100%; text-align: left; border: 0; border-radius: 8px; padding: 7px 10px; margin: 1px 0;
   background: transparent; }
 .sitem:hover { background: var(--hover); }
@@ -513,7 +515,11 @@ const EMAS = [["ema20", "EMA 20"], ["ema50", "EMA 50"], ["ema200", "EMA 200"]];
 const setups = { data: null, strong: new Map(), strongMetric: null, sel: null, freq: "daily", range: { daily: "1Y", weekly: "5Y" }, chart: null };
 // "Tight Consolidation and above EMA 50": the filters every setup stock passes
 const filtersText = sep => (setups.data?.filters || [setups.data?.filter?.name || "the filter scan"]).join(sep);
-const curList = () => setups.data?.stocks || [];  // each stock once, tightest first
+// Each stock once, newest in the setups first (fewest sessions; ties keep the stored order, tightest first)
+const curList = () => [...(setups.data?.stocks || [])].sort((a, b) => (a.age ?? Infinity) - (b.age ?? Infinity));
+const ageText = st => st.age == null ? "" : st.age === 1 ? "New" : `${st.age}d`;
+const ageTip = st => st.age == null ? "" : st.age === 1 ? `New in the setups (${fmtDate(st.since)})`
+  : `In the setups for ${st.age} sessions, since ${fmtDate(st.since)}`;
 const scansOf = sym => (setups.data?.setups || []).filter(su => su.symbols.includes(sym));
 try {
   const c = JSON.parse(localStorage.getItem("setupChart") || "null");
@@ -600,7 +606,7 @@ function renderSetupList() {
   const d = setups.data, list = curList();
   $("setupList").innerHTML = `<div class="slhd">Setups <span class="nc">(${list.length})</span></div>` +
     (list.length ? list.map(st => `<button class="sitem" role="option" data-sym="${esc(st.symbol)}" aria-selected="${st.symbol === setups.sel}">
-      <span class="srow"><span class="sym">${esc(st.symbol)}</span></span>
+      <span class="srow"><span class="sym">${esc(st.symbol)}</span><span class="age${st.age === 1 ? " new" : ""}" title="${esc(ageTip(st))}">${ageText(st)}</span></span>
       <span class="co">${esc(st.company || "")}</span>
     </button>`).join("")
     : `<div class="empty" style="padding:8px">No setup stock passes ${esc(filtersText(" and "))} for this session.</div>`);
