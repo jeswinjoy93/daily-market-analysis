@@ -127,9 +127,9 @@ Laid out like Trendvue's watchlist, using the full window width (the chart also 
   TradingView link.
 - **Scans:** after the sector and industry, a tag for each scan the stock is in; Top Movers adds the periods it leads,
   e.g. `Top Movers 1Y`.
-- **Strong sectors:** the sector name above the chart is shaded green when it's one of India's strong sectors on the
-  Breadth page's Strong view, at the selected % (the *Top 5 strong sectors today* and *Top 5 strong sectors* cards).
-  Hover it for which card and its numbers.
+- **Strong sectors:** the sector name above the chart is shaded green when it's one of India's 5 strongest sectors
+  overall: the Breadth page's *Top 5 strong sectors* card (highest % now) at the selected %, not the day's biggest
+  gainers. Hover it for its rank and %.
 - **Flip** between stocks with **↑ / ↓** or the **‹ ›** buttons.
 - **Copy for TradingView / ↓ .txt** export the list as one section, e.g.
   `###SETUPS - TIGHT CONSOLIDATION + ABOVE EMA 50 (20),NSE:SHAILY,…`.
@@ -164,6 +164,7 @@ does the reading.
 | **What's driving it**: a summary, up to 4 drivers (results, order, capacity, policy, geopolitics, sector, fund raise, corporate, rating) and what to watch | DeepSeek, from the filings and headlines below | Each driver links the filing or headline it came from; a driver the model can't tie to one is dropped. |
 | **Sector and industry story**: short term (2 weeks) and long term (6 months) | DeepSeek, from Google News headlines | Same, with sources. |
 | **Quarterly results, ownership, financial health**, growth (Accelerating / Slowing / Mixed / Declining), red flags, next results date | Trendvue (`/api/stock_bundle/<symbol>`) | Computed in code. The results date is Trendvue's estimate, not a confirmed board meeting: marked red within 14 days. |
+| **Earnings quality**: Red flag / Check / OK | The stock's screener.in financials (consolidated when reported and up to date), and its other-income breakdown into exceptional items and normal other income | Computed in code, latest quarter vs the previous 4 and the year-ago quarter; yearly for cash. **Red:** an exceptional gain ≥ 10% of pre-tax profit (PBT); other income ≥ 50% of PBT, or ≥ 2× its 4-quarter average; PBT growth ≥ 20 pts ahead of growth without other income, or a core loss behind a reported profit; operating cash flow < 50% of net profit over 3 years, or negative with a profit; debtor days up ≥ 30% and ≥ 15 days over 2 years. **Check:** other income ≥ 30% of PBT; a year-ago exceptional gain; tax < 10% when usually ≥ 20%; operating margin ≥ 5 pts above its 4-quarter average; sales ≥ 1.5× the 4-quarter average and ≥ +50% YoY; cash conversion < 80%. Cash and receivable checks are skipped for lenders. Thresholds at the top of `earnings_quality` in `triage.py`. The AI note is given the results and mentions a red one that bears on the move. |
 | **Concall guidance** | The latest concall transcript (a BSE PDF linked on screener.in) | Read with `pypdf` if installed, else DeepSeek's fetch API; summarised by DeepSeek once per transcript. |
 | **Latest filings** | The stock's screener.in page (its 5 latest BSE/NSE announcements, with screener's one-line summaries) | |
 | **Headlines** | Google News (India), last 14 days | |

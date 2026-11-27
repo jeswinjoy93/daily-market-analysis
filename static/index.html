@@ -186,13 +186,16 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
 .thealth { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 10px; font-variant-numeric: tabular-nums; }
 .thealth span { color: var(--muted); font-size: 11px; display: block; }
 .tflags { color: var(--down-text); }
+.tq { list-style: none; padding-left: 0; }
+.tq .ttype.red { background: var(--down-text); color: var(--surface); }
+.tq .ttype.ok { color: var(--up-text); background: transparent; border: 1px solid var(--up-text); }
 .ttable td.up { color: var(--up-text); } .ttable td.down { color: var(--down-text); }
 .tfoot { margin-top: 16px; color: var(--muted); font-size: 11px; line-height: 1.45; }
 @media (max-width: 720px) {
   .setups { grid-template-columns: minmax(0, 1fr); }
   .schart { padding: 12px 12px 8px; }
   .chd { grid-template-columns: minmax(0, 1fr); }  /* controls go to their own row */
-  .ctools { flex-wrap: wrap; }
+  .ctools { flex-wrap: wrap; justify-content: flex-end; }  /* right-aligned, so Chart | Notes stays put when the chart's controls go */
   .slist { border-right: 0; border-bottom: 1px solid var(--border); height: auto; min-height: 0; max-height: 230px; }
 }
 </style>
@@ -565,7 +568,7 @@ const fmtV = v => v == null ? "—" : v >= 1e9 ? (v / 1e9).toFixed(2) + "B" : v 
 const fmtPct = v => v == null ? "—" : (r1(v) > 0 ? "+" : "") + r1(v).toFixed(1) + "%";
 const fmtBarDate = d => new Date(d + "T00:00:00").toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short", year: "numeric" });
 
-// India's strong sectors = the Breadth page's Strong-view sector cards (top 5 today, top 5 now) at the selected %,
+// India's strong sectors = the Breadth page's "Top 5 strong sectors" card (highest % now) at the selected %,
 // marked green on the Setups chart header. Map: sector -> why it's strong.
 async function loadStrongSectors() {
   const metric = state.metric, strong = new Map();
@@ -573,10 +576,10 @@ async function loadStrongSectors() {
     const d = state.market === "in" && state.data?.date && state.data.metric === metric ? state.data
       : window.STATIC_SITE ? await loadStatic("in")
       : await fetch("/api/compare?" + new URLSearchParams({ market: "in", metric })).then(r => r.json());
-    const add = (name, why) => strong.set(name, [...(strong.get(name) || []), why]);
-    for (const r of d.strength || []) add(r.name, `Top 5 strong sectors today (+${r.change.toFixed(1)} pts)`);
+    // overall strength (highest % now), not the day's biggest gainers
     (d.sectors || []).filter(r => r.value != null && (r.stock_count ?? 0) >= (d.min_group_stocks ?? 3))
-      .sort((a, b) => b.value - a.value).slice(0, 5).forEach(r => add(r.name, `Top 5 strong sectors (${fmt(r.value)} within ${pctLabel()} of 52W high)`));
+      .sort((a, b) => b.value - a.value).slice(0, 5)
+      .forEach((r, k) => strong.set(r.name, [`#${k + 1} of the top 5 strong sectors (${fmt(r.value)} of its stocks within ${pctLabel()} of their 52W high)`]));
   } catch (e) {}  // no marking rather than no page
   setups.strong = strong; setups.strongMetric = metric;
 }
@@ -672,13 +675,13 @@ function renderSetupChart() {
       <div><a class="csym" href="https://trendvue.in/stocks/${encodeURIComponent(st.symbol)}" target="_blank" rel="noopener" title="Open on Trendvue">${esc(st.symbol)}</a>
         <span class="cquote">${stats} · <a href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSym)}" target="_blank" rel="noopener">TradingView ↗</a></span></div>
       <div class="ctools">
-        ${hasNotes ? `<div class="seg" id="panelSeg" role="group" aria-label="Show">${[["chart", "Chart"], ["notes", "Notes"]].map(([p, label]) =>
-          `<button data-panel="${p}" aria-pressed="${(p === "notes") === notes}" title="${p === "notes" ? "Triage notes: what's driving the stock, its sector and industry, results, filings" : "Price chart"} (N)">${label}</button>`).join("")}</div>` : ""}
         ${notes ? "" : `<div class="seg" id="freqSeg" role="group" aria-label="Timeframe">${Object.keys(RANGES).map(f =>
           `<button data-freq="${f}" aria-pressed="${f === setups.freq}">${f === "daily" ? "Daily" : "Weekly"}</button>`).join("")}</div>
         <div class="seg" id="rangeSeg" role="group" aria-label="Range">${Object.keys(RANGES[setups.freq]).map(r =>
           `<button data-range="${r}" aria-pressed="${r === setups.range[setups.freq]}">${r}</button>`).join("")}</div>`}
         <div class="cnav"><button id="setPrev" aria-label="Previous stock (↑)" title="Previous stock (↑)" ${i <= 0 ? "disabled" : ""}>‹</button>${i + 1} / ${list.length}<button id="setNext" aria-label="Next stock (↓)" title="Next stock (↓)" ${i >= list.length - 1 ? "disabled" : ""}>›</button></div>
+        ${hasNotes ? `<div class="seg" id="panelSeg" role="group" aria-label="Show">${[["chart", "Chart"], ["notes", "Notes"]].map(([p, label]) =>
+          `<button data-panel="${p}" aria-pressed="${(p === "notes") === notes}" title="${p === "notes" ? "Triage notes: what's driving the stock, its sector and industry, results, filings" : "Price chart"} (N)">${label}</button>`).join("")}</div>` : ""}
       </div>
     </div>
     <div class="cstats">${st.industry ? `${sectorTag(st.sector)} › ${esc(st.industry)}` : ""}
@@ -778,8 +781,14 @@ function renderNotes(st) {
     if (hl) {
       const cell = (k, v) => `<div><span>${k}</span>${v ?? "—"}</div>`;
       r += `<h3>Financial health</h3><div class="thealth">${cell("P/E", hl.pe)}${cell("Debt/equity", hl.de)}${cell("Interest cover", hl.icr == null ? null : hl.icr + "x")}
-        ${cell("ROCE", hl.roce == null ? null : hl.roce + "%")}${cell("ROE", hl.roe == null ? null : hl.roe + "%")}${cell("FCF", hl.fcf_cr == null ? null : "₹" + hl.fcf_cr.toLocaleString("en-IN") + " cr")}</div>`;
+        ${cell("ROCE", hl.roce == null ? null : hl.roce + "%")}${cell("ROE", hl.roe == null ? null : hl.roe + "%")}${cell("FCF", hl.fcf_cr == null ? null : (hl.fcf_cr < 0 ? "−₹" : "₹") + Math.abs(hl.fcf_cr).toLocaleString("en-IN") + " cr")}</div>`;
       if (f.flags?.length) r += `<ul class="tflags">${f.flags.map(x => `<li>${esc(x)}</li>`).join("")}</ul>`;
+    }
+    const eq = rec.quality;
+    if (eq?.checks?.length) {
+      const tag = { red: ["Red flag", "red"], check: ["Check", "check"], ok: ["OK", "ok"] };
+      r += `<h3>Earnings quality</h3><p class="tmeta">Is the profit one-time, or not turning into cash? ${esc(eq.basis)} figures${eq.quarter ? `, latest quarter ${esc(eq.quarter)}` : ""}${eq.lender ? " (lender: cash-flow and receivable checks don't apply)" : ""}</p>
+        <ul class="tq">${eq.checks.map(c => `<li><span class="ttype ${tag[c.level][1]}">${tag[c.level][0]}</span><b>${esc(c.area)}:</b> ${esc(c.text)}</li>`).join("")}</ul>`;
     }
     const g = rec.guidance, cc = rec.concall;
     if (g?.guidance?.length || cc) {
@@ -791,7 +800,7 @@ function renderNotes(st) {
     if (rec.filings?.length) r += `<h3>Latest filings</h3><ul>${rec.filings.map(x => `<li>${esc(shortDate(x.date))} · ${tlink(x.url, esc(x.title))}${x.summary ? `<div class="tmeta">${esc(x.summary)}</div>` : ""}</li>`).join("")}</ul>`;
     if (rec.news?.length) r += `<h3>Headlines</h3><ul>${rec.news.slice(0, 6).map(x => `<li>${esc(shortDate(x.date))} · ${tlink(x.url, esc(x.title))} <span class="tsrc">${esc(x.source || "")}</span></li>`).join("")}</ul>`;
   }
-  const foot = rec ? `<p class="tfoot">Notes of ${esc(fmtDate(rec.date))}${rec.model ? ` · AI notes by ${esc(rec.model)}, from the filings and headlines listed` : ""}. Numbers from Trendvue, filings from screener.in, headlines from Google News. Check the sources before you trade.${rec.screener_url ? " " + tlink(rec.screener_url, "screener.in ↗") : ""}</p>` : "";
+  const foot = rec ? `<p class="tfoot">Notes of ${esc(fmtDate(rec.date))}</p>` : "";
   el.innerHTML = `<div class="tcols"><div class="tcol">${h}</div><div class="tcol">${r}</div></div>${foot}`;
 }
 

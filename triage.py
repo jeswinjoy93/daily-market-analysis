@@ -215,15 +215,205 @@ def stock_facts(symbol, today):
 
 # ---- filings (screener.in) ----------------------------------------------------------------------------------------
 
+def _val(s):
+    try:
+        return float(str(s).replace(",", "").replace("%", "").strip())
+    except ValueError:
+        return None
+
+
+def _table(page, section):
+    """A screener.in financials table (quarters, profit-loss, balance-sheet, cash-flow, ratios):
+    {"cols": [period, ...], "rows": {label: [number or None, ...]}}, ₹ crore (or %, or days)."""
+    i = page.find(f'id="{section}"')
+    if i < 0:
+        return None
+    block = page[i:page.find("</table>", i)]
+    cols = [_text(h) for h in re.findall(r"<th[^>]*>(.*?)</th>", block, re.S)][1:]
+    rows = {}
+    for tr in re.findall(r"<tr[^>]*>(.*?)</tr>", block, re.S):
+        cells = [_text(c) for c in re.findall(r"<td[^>]*>(.*?)</td>", tr, re.S)]
+        if cells and cells[0]:
+            rows[re.sub(r"\s*\+$", "", cells[0]).strip()] = [_val(c) for c in cells[1:]]
+    return {"cols": cols, "rows": rows}
+
+
+# Earnings-quality thresholds (see earnings_quality)
+EXCEPTIONAL_SHARE = 0.10    # exceptional items >= this share of PBT
+OTHER_INCOME_CHECK, OTHER_INCOME_RED = 0.30, 0.50   # other income as a share of PBT
+OTHER_INCOME_SPIKE = 2.0    # other income >= this x its previous 4-quarter average
+CORE_GAP = 0.20             # reported PBT growth ahead of core PBT growth by >= 20 points
+MARGIN_SPIKE_PTS = 5.0      # OPM above its previous 4-quarter average by >= 5 points
+LUMPY_SALES = 1.5           # sales >= 1.5x the previous 4-quarter average (and >= +50% YoY)
+CASH_RED, CASH_CHECK = 0.5, 0.8                     # 3-year operating cash flow / net profit
+DEBTOR_RISE, DEBTOR_DAYS = 1.3, 15                  # debtor days up >= 30% and >= 15 days over 2 years
+
+
+def _cr(v):
+    return f"{'−' if v < 0 else ''}₹{abs(v):,.0f} cr"
+
+
+MONTHS = {m: i for i, m in enumerate(("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), 1)}
+
+
+def _period(table):
+    """A table's latest period as (year, month), e.g. 'Sep 2026' -> (2026, 9); (0, 0) if none."""
+    m = re.fullmatch(r"(\w{3}) (\d{4})", ((table or {}).get("cols") or [""])[-1])
+    return (int(m.group(2)), MONTHS.get(m.group(1), 0)) if m else (0, 0)
+
+
+def _fy(col):
+    """'Mar 2026' -> 'FY26' (other year-ends as they are)."""
+    m = re.fullmatch(r"Mar (\d{4})", col or "")
+    return f"FY{m.group(1)[2:]}" if m else col
+
+
+def earnings_quality(fin, sched, consolidated):
+    """Code checks on whether the latest profit is one-time or not backed by cash, from screener.in's tables.
+    Each check: {"level": "red" (likely problem) | "check" (worth verifying) | "ok", "area", "text"}."""
+    checks = []
+
+    def add(level, area, text):
+        checks.append({"level": level, "area": area, "text": text})
+
+    q = fin.get("quarters") or {"cols": [], "rows": {}}
+    cols, R = q["cols"], q["rows"]
+    lender = "Financing Profit" in R  # banks / NBFCs: screener shows a lender's layout
+    sales, op, opm = R.get("Sales") or R.get("Revenue"), R.get("Operating Profit") or R.get("Financing Profit"), \
+        R.get("OPM %") or R.get("Financing Margin %")
+    pbt, oi, tax = R.get("Profit before tax"), R.get("Other Income"), R.get("Tax %")
+    n = len(cols)
+
+    def at(row, k):  # value k quarters back from the latest (0 = latest)
+        return row[n - 1 - k] if row and len(row) == n and n > k and row[n - 1 - k] is not None else None
+
+    def avg(row, ks):
+        vals = [at(row, k) for k in ks if at(row, k) is not None]
+        return sum(vals) / len(vals) if vals else None
+
+    sched = sched if isinstance(sched, dict) else {}
+    exc_row = [_val((sched.get("Exceptional items") or {}).get(c)) for c in cols] if sched.get("Exceptional items") else None
+    oin_row = [_val((sched.get("Other income normal") or {}).get(c)) for c in cols] if sched.get("Other income normal") else oi
+    L, p0 = (cols[-1] if cols else None), at(pbt, 0)
+
+    if L and p0 is not None:
+        # 1. one-time (exceptional) items in the latest quarter, and in the year-ago quarter it's compared with
+        e0 = at(exc_row, 0) or 0
+        if e0 and abs(e0) >= EXCEPTIONAL_SHARE * abs(p0 or 1):
+            if e0 > 0:
+                add("red", "One-time income", f"Exceptional gain of {_cr(e0)} in {L}, {e0 / abs(p0):.0%} of pre-tax profit: "
+                                              f"without it PBT is {_cr(p0 - e0)}.")
+            else:
+                add("check", "One-time income", f"Exceptional loss of {_cr(-e0)} in {L}: this quarter's profit is understated.")
+        e4, p4 = at(exc_row, 4) or 0, at(pbt, 4)
+        if e4 > 0 and p4 and e4 >= EXCEPTIONAL_SHARE * abs(p4):
+            add("check", "One-time income", f"The year-ago quarter ({cols[-5]}) had a {_cr(e4)} exceptional gain, so "
+                                            f"year-on-year profit growth looks weaker than it is.")
+        # 2-3. other income: its share of PBT, and a jump against its recent run-rate
+        o0, oavg = at(oin_row, 0), avg(oin_row, (1, 2, 3, 4))
+        if o0 is not None and p0 > 0:
+            share = o0 / p0
+            if oavg and oavg > 0 and o0 >= OTHER_INCOME_SPIKE * oavg and share >= 0.10:
+                add("red", "Other income", f"Other income jumped to {_cr(o0)} in {L} from about {_cr(oavg)} a quarter "
+                                           f"before: {share:.0%} of pre-tax profit.")
+            elif share >= OTHER_INCOME_CHECK:
+                add("red" if share >= OTHER_INCOME_RED else "check", "Other income",
+                    f"Other income is {_cr(o0)}, {share:.0%} of pre-tax profit in {L}.")
+            elif not e0:
+                add("ok", "Other income", f"No exceptional items; other income is {share:.0%} of pre-tax profit.")
+        # 4. core profit (PBT without any other income) vs reported, against the same quarter last year
+        oi0, oi4 = at(oi, 0), at(oi, 4)
+        if oi0 is not None and p4 is not None and oi4 is not None:
+            c0, c4 = p0 - oi0, p4 - oi4
+            if c0 <= 0 < p0:
+                add("red", "Core profit", f"Without other income the business made a pre-tax loss of {_cr(-c0)} in {L}; "
+                                          f"the reported profit comes from other income.")
+            elif c4 > 0 and p4 > 0:
+                g_r, g_c = p0 / p4 - 1, c0 / c4 - 1
+                if g_r - g_c >= CORE_GAP and g_r > 0:
+                    add("red", "Core profit", f"Pre-tax profit {g_r:+.0%} year on year, but only {g_c:+.0%} without "
+                                              f"other income.")
+                else:
+                    add("ok", "Core profit", f"Core pre-tax profit {g_c:+.0%} year on year, reported {g_r:+.0%}.")
+        # 5. an unusually low tax charge lifting net profit
+        t0, tavg = at(tax, 0), avg(tax, (1, 2, 3, 4))
+        if t0 is not None and tavg and p0 > 0 and t0 < 10 and tavg >= 20:
+            add("check", "Tax", f"Tax rate {t0:.0f}% in {L} against about {tavg:.0f}% usually: a low tax charge "
+                                f"lifted net profit.")
+    # 6. a margin spike, and 7. lumpy revenue: can be real, so worth verifying rather than red
+    m0, mavg = at(opm, 0), avg(opm, (1, 2, 3, 4))
+    if m0 is not None and mavg is not None:
+        if m0 - mavg >= MARGIN_SPIKE_PTS:
+            add("check", "Margins", f"Operating margin {m0:.0f}% in {L} against about {mavg:.0f}% over the previous "
+                                    f"4 quarters: check whether it's a one-off (pricing, write-backs, a big order).")
+        else:
+            add("ok", "Margins", f"Operating margin {m0:.0f}% (previous 4 quarters about {mavg:.0f}%).")
+    s0, savg, s4 = at(sales, 0), avg(sales, (1, 2, 3, 4)), at(sales, 4)
+    if s0 and savg and s4 and s0 >= LUMPY_SALES * savg and s0 / s4 - 1 >= 0.5:
+        add("check", "Revenue", f"Sales {_cr(s0)} in {L}, {s0 / savg:.1f}x the previous 4 quarters' average: check for "
+                                f"a one-off order, project or asset sale.")
+
+    # 8-9. profit vs cash (yearly): not meaningful for lenders, whose loans are their operating cash flow
+    if not lender:
+        pl, cf, ra = fin.get("profit-loss") or {}, fin.get("cash-flow") or {}, fin.get("ratios") or {}
+        npy = dict(zip(pl.get("cols", []), (pl.get("rows") or {}).get("Net Profit") or []))
+        cfo = dict(zip(cf.get("cols", []), (cf.get("rows") or {}).get("Cash from Operating Activity") or []))
+        years = [c for c in cf.get("cols", []) if c != "TTM" and npy.get(c) is not None and cfo.get(c) is not None][-3:]
+        if years:
+            tot_np, tot_cfo, last = sum(npy[y] for y in years), sum(cfo[y] for y in years), years[-1]
+            span = f"{_fy(years[0])}–{_fy(last)}" if len(years) > 1 else _fy(last)
+            if cfo[last] < 0 < npy[last]:
+                add("red", "Cash conversion", f"Operating cash flow was negative ({_cr(cfo[last])}) in {_fy(last)} "
+                                              f"despite {_cr(npy[last])} of profit.")
+            if tot_np > 0:
+                r = tot_cfo / tot_np
+                add("red" if r < CASH_RED else "check" if r < CASH_CHECK else "ok", "Cash conversion",
+                    f"Operating cash flow was {r:.0%} of net profit over {span}"
+                    + (": much of the profit isn't arriving as cash." if r < CASH_CHECK else "."))
+        dd = dict(zip(ra.get("cols", []), (ra.get("rows") or {}).get("Debtor Days") or []))
+        dy = [c for c in ra.get("cols", []) if dd.get(c) is not None][-3:]
+        if len(dy) >= 2:
+            d0, dn = dd[dy[0]], dd[dy[-1]]
+            if dn >= DEBTOR_RISE * max(d0, 1) and dn - d0 >= DEBTOR_DAYS:
+                add("red", "Receivables", f"Debtor days rose from {d0:.0f} to {dn:.0f} ({_fy(dy[0])}→{_fy(dy[-1])}): "
+                                          f"sales are being booked faster than customers pay.")
+            else:
+                add("ok", "Receivables", f"Debtor days {d0:.0f} → {dn:.0f} ({_fy(dy[0])}→{_fy(dy[-1])}).")
+    order = {"red": 0, "check": 1, "ok": 2}
+    return {"basis": "consolidated" if consolidated else "standalone", "quarter": L, "lender": lender,
+            "checks": sorted(checks, key=lambda c: order[c["level"]])}
+
+
 def screener(symbol):
-    """The stock's screener.in page: full name, latest announcements (title, date, summary, link) and latest concall
-    (month, transcript and presentation links). None if screener doesn't know the symbol."""
-    page = _get(SCREENER_URL.format(urllib.parse.quote(symbol, safe="")))
+    """The stock's screener.in page (consolidated when the company reports consolidated figures): full name, latest
+    announcements (title, date, summary, link), latest concall (month, transcript and presentation links) and the
+    earnings-quality checks on its financials. None if screener doesn't know the symbol."""
+    url = SCREENER_URL.format(urllib.parse.quote(symbol, safe=""))
+    page, consolidated = _get(url), False
     if not page:
         return None
+    if "View Consolidated" in page:  # the default page is standalone: the group's figures are the ones that count,
+        time.sleep(SCREENER_GAP)     # unless the company stopped reporting them (an older latest quarter)
+        cpage = _get(url + "consolidated/")
+        if cpage and _period(_table(cpage, "quarters")) >= _period(_table(page, "quarters")) > (0, 0):
+            page, url, consolidated = cpage, url + "consolidated/", True
     m = re.search(r"<h1[^>]*>.*?<span class=\"min-width-0[^\"]*\">(.*?)</span>", page, re.S)
-    out = {"name": _text(m.group(1)) if m else None, "url": SCREENER_URL.format(urllib.parse.quote(symbol, safe="")),
-           "filings": [], "concall": None}
+    out = {"name": _text(m.group(1)) if m else None, "url": url, "filings": [], "concall": None}
+    cid = re.search(r'data-company-id="(\d+)"', page)
+    sched = None
+    if cid:  # other income split into exceptional items and the normal kind, per quarter
+        time.sleep(SCREENER_GAP)
+        try:
+            sched = json.loads(_get(f"https://www.screener.in/api/company/{cid.group(1)}/schedules/?parent=Other+Income"
+                                    f"&section=quarters{'&consolidated=true' if consolidated else ''}") or "null")
+        except (ValueError, urllib.error.HTTPError) as e:
+            print(f"[triage] {symbol} other income breakdown: {e}")
+    try:
+        out["quality"] = earnings_quality({s: _table(page, s) for s in ("quarters", "profit-loss", "cash-flow", "ratios")},
+                                          sched, consolidated)
+    except Exception as e:  # an unusual table layout: no checks rather than no triage
+        print(f"[triage] {symbol} earnings quality: {e}")
+        out["quality"] = None
     i = page.find('id="company-announcements-tab"')
     if i >= 0:
         block = page[i:page.find("</ul>", i)]
@@ -386,7 +576,11 @@ Reply with JSON only, exactly this shape:
 {{"summary": "at most 30 words: the main reason the stock is moving, or 'No clear catalyst in recent filings or news.'",
  "drivers": [{{"type": one of {json.dumps(DRIVER_TYPES)}, "text": "at most 25 words, specific", "src": "id of the item it comes from, e.g. F2 or N5"}}],
  "watch": ["at most 2 items of at most 20 words: upcoming events or risks to watch"]}}
-List 0 to 4 drivers, most important first. Every driver must cite an item id that supports it."""
+List 0 to 4 drivers, most important first. Every driver must cite an item id that supports it.
+earnings_quality holds checks that code computed from the reported financials (red = likely problem, check = worth
+verifying, ok = passed): one-time income, other income, core profit, margins, revenue, cash conversion, receivables.
+Don't recompute them. If a red one bears on the move (for example a profit jump that came from one-time or other
+income, or profit not turning into cash), say so in the summary or in watch."""
 
 GROUP_SYSTEM = f"""You help an Indian swing trader understand a sector or industry of the Indian stock market. You get
 its breadth status (share of its stocks near their 52-week high, computed by code), its returns, and news headlines from
@@ -452,6 +646,7 @@ def stock_note(st, rec, groups, key, usage):
                          "change_1w_pct": _num(st.get("change_1w")), "change_1m_pct": _num(st.get("change_1m"))},
                "sector_status": sec, "industry_status": ind, "facts": _facts_for_model(rec["facts"]),
                "concall_guidance": (rec.get("guidance") or {}).get("guidance"),
+               "earnings_quality": [{k: c[k] for k in ("level", "area", "text")} for c in (rec.get("quality") or {}).get("checks", [])],
                "FILINGS": filings, "NEWS": headlines}
     ans = ask_json(STOCK_SYSTEM, json.dumps(payload, ensure_ascii=False), key, usage)
     return {"summary": str(ans.get("summary") or "").strip(), "drivers": _resolve(ans.get("drivers"), sources),
@@ -544,7 +739,8 @@ def take_triage(con, force=False, now=None):
             scr = None
         time.sleep(SCREENER_GAP)
         rec.update(company_name=(scr or {}).get("name") or st.get("company"), screener_url=(scr or {}).get("url"),
-                   filings=(scr or {}).get("filings", []), concall=(scr or {}).get("concall"))
+                   filings=(scr or {}).get("filings", []), concall=(scr or {}).get("concall"),
+                   quality=(scr or {}).get("quality"))
         q = _search_name(rec["company_name"])
         rec["news"] = news(q, 14) if q else []
         time.sleep(NEWS_GAP)
