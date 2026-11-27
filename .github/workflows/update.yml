@@ -22,6 +22,10 @@ on:
         description: "Fetch now even if nothing is due"
         type: boolean
         default: true
+      triage:
+        description: "Also write the Setups triage notes now (normally after the close), for stocks without notes"
+        type: boolean
+        default: false
   push:
     branches: [main]   # code changes: rebuild the site from the stored data
 
@@ -78,9 +82,16 @@ jobs:
             python3 market.py auto in,us
           fi
 
+      - name: Triage now
+        id: triage
+        if: "!cancelled() && github.event_name == 'workflow_dispatch' && inputs.triage"
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: python3 market.py triage
+
       # !cancelled(): if one market's fetch failed, still save and publish the other's new data.
       - name: Save databases
-        if: "!cancelled() && steps.fetch.outputs.changed == 'true'"
+        if: "!cancelled() && (steps.fetch.outputs.changed == 'true' || steps.triage.outputs.changed == 'true')"
         run: |
           gh release view data > /dev/null 2>&1 || gh release create data --prerelease --title "Dashboard data" \
             --notes "SQLite databases maintained by the Update dashboard workflow (market.db.gz: India, market_us.db.gz: US). Not a software release."
@@ -90,7 +101,7 @@ jobs:
 
       - name: Build site
         id: build
-        if: "!cancelled() && (steps.fetch.outputs.changed == 'true' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.force))"
+        if: "!cancelled() && (steps.fetch.outputs.changed == 'true' || steps.triage.outputs.changed == 'true' || github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.force))"
         run: python3 market.py export site   # every market with stored data
 
       - uses: actions/upload-pages-artifact@v5

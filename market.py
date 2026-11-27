@@ -798,7 +798,9 @@ if __name__ == "__main__":
     elif cmd == "triage":  # triage the latest setups now; "force" redoes the stocks already done
         import triage
         with closing(connect("in")) as con:
-            print(json.dumps(triage.take_triage(con, force=arg == "force")))
+            res = triage.take_triage(con, force=arg == "force")
+        print(json.dumps(res))
+        _github_output(changed=str(res["stored"]).lower())
     elif cmd == "next-wait":
         print(next_wait_seconds(_markets_arg(arg, "in")))
     elif cmd == "export":
