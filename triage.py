@@ -10,7 +10,9 @@ Code does the numbers, an LLM (DeepSeek) does the reading:
 - Filings (code): the latest announcements on the stock's screener.in page (with screener's one-line summaries),
   and its latest concall transcript, read from the PDF (needs `pypdf`, else DeepSeek's fetch API, else skipped).
 - News (code): Google News headlines for the stock (last 14 days) and for its sector and industry
-  (last 14 days and last 6 months).
+  (last 14 days and last 6 months), filtered: a stock's headline must name the company, templated price/rating/list
+  pages are dropped, and a story is kept once. The model then picks the stock headlines shown on the page, shown
+  older batches (and, once the 14 days run out, a 28-day search) while it has picked fewer than 6.
 - Notes (DeepSeek, needs DEEPSEEK_API_KEY): what is driving the stock, what moved its sector and industry over the
   short and the long term, and management's guidance from the concall. Without a key the code-only parts are
   still stored and shown.
@@ -44,7 +46,12 @@ SCREENER_URL = "https://www.screener.in/company/{}/"
 SCREENER_GAP = 2.0              # seconds between screener.in requests
 NEWS_URL = "https://news.google.com/rss/search?"
 NEWS_GAP = 1.0
-MAX_HEADLINES = 12              # per news search, for the model
+NEWS_DAYS = 14                  # a stock's headline window
+NEWS_DAYS_EXTENDED = 28         # searched once if the model hasn't picked enough from the first window
+_news_lock = threading.Lock()   # extended searches run from the note threads: one Google request at a time
+MAX_HEADLINES = 12              # per news search, for the model (a stock's first batch)
+NEWS_RETRIES = 2                # more batches of a stock's headlines when the model picks fewer than SHOWN_HEADLINES
+NEWS_POOL = MAX_HEADLINES * (1 + NEWS_RETRIES)  # a stock's headlines kept after the filters
 SHOWN_HEADLINES = 6             # per stock, on the page
 TRANSCRIPT_CHARS = 120_000      # of a concall transcript sent to the model (~30K tokens)
 MAX_AI_ATTEMPTS = 3             # per stock and session, so a bad key or an outage doesn't retry forever
@@ -464,33 +471,128 @@ def transcript_text(url, key):
 
 # ---- news (Google News) -------------------------------------------------------------------------------------------
 
-def news(query, days):
-    """Up to MAX_HEADLINES Google News headlines (India edition) for `query` from the last `days` days, newest first."""
+# Headline patterns of templated pages that only restate the price, a rating or a list (no driver to read)
+JUNK_TITLES = re.compile("|".join([
+    r"seasonal returns", r"\blive (nse|bse)\b", r"stock price & chart", r"stock/share price", r"share price today",
+    r"price (target|forecast)", r"\b(target|outlook) (to )?20\d\d", r"\b(is )?rated (strong )?(buy|hold|sell)\b",
+    r"\b(upgraded|downgraded) to (strong )?(buy|hold|sell)\b", r"open interest", r"\bstreak\b", r"all-time high",
+    r"52[- ]week high", r"momentum (builds|shifts)", r"technical (momentum|readings)", r"near peak",
+    r"price.{0,40}valuation|valuation (update|view)", r"^top \d+ ", r"\bbest\b.{0,40}\bstocks\b",
+    r"stocks to (watch|buy|invest)", r"stocks under (rs )?\d", r"insider transactions", r"investor analysis",
+    r"share price (rises?|falls?|declines?|is (up|down))\b", r"\w+day's session", r"share price live", r"day's (high|low)",
+    r"latest trading", r"share price$", r"stock forecast", r"- stock analysis$", r"outlook for the week",
+    r"results preview", r"shares: volume", r"\bvs\.? ", r"quote & history", r"stock price, news",
+]), re.I)
+MARKET_WORDS = "(shares OR stock OR NSE OR BSE OR crore)"  # added to a one-word company name's search
+DUPLICATE_OVERLAP = 0.6         # share of the shorter headline's words: at least this, it's the same story
+STOPWORDS = set("a an the of in on at to for from by with and or as is are its it after over under into amid ltd "
+                "limited share shares stock stocks rs cr crore".split())
+
+
+def _norm(text):
+    """Lower-case words only: "Dr Reddy's (India) & Co." -> 'dr reddys india and co'."""
+    text = (text or "").lower().replace("'", "").replace("’", "").replace("&", " and ")
+    return " ".join(re.findall(r"[a-z0-9]+", text))
+
+
+def _name_stem(company):
+    """'Reliance Industries Ltd' -> 'Reliance Industries' (without the legal suffix)."""
+    return re.sub(r"\b(Ltd|Limited)\.?$", "", (company or "").strip(), flags=re.I).strip(" .,")
+
+
+# Name words the press drops: "Indo Count Industries" -> "Indo Count" (but "Anand Rathi Wealth" stays whole, since
+# "Anand Rathi" is also a broker)
+GENERIC_NAME_WORDS = set("industries industry holdings holding enterprises enterprise technologies technology tech "
+                         "sciences services communications corporation corp company products spaces technik india "
+                         "systems solutions international infrastructure infra engineering engineers laboratories "
+                         "labs pharmaceuticals pharma chemicals hotels resorts ventures global and of the".split())
+
+
+def _short_name(words):
+    """The first two words of a longer name when the rest is generic (or long: four words or more), else None."""
+    if len(words) >= 4 or (len(words) == 3 and _norm(words[2]) in GENERIC_NAME_WORDS):
+        return " ".join(words[:2]).rstrip(",&")
+    return None
+
+
+def name_aliases(company, symbol=None):
+    """How a headline can name the company: its name, its first word plus the start of the second ('ASM Tech' for
+    ASM Technologies) when the short name is safe, and its NSE symbol (PAYTM, TFCI)."""
+    words = _norm(_name_stem(company)).split()
+    out = {" ".join(words)} if words else set()
+    if len(words) == 2 or (len(words) > 2 and _short_name(words)):
+        out.add(f"{words[0]} {words[1][:4]}")
+    sym = re.sub(r"ltd$", "", (symbol or "").lower())
+    if len(sym) >= 4:
+        out.add(sym)
+    return sorted(a for a in out if a)
+
+
+def _names_company(title, aliases):
+    t = _norm(title)
+    return any(re.search(r"\b" + re.escape(a), t) for a in aliases)
+
+
+def _words(title, aliases=()):
+    drop = STOPWORDS | {w for a in aliases for w in a.split()}
+    return {w for w in _norm(title).split() if w not in drop}
+
+
+def news(query, days, aliases=None, limit=MAX_HEADLINES, seen=()):
+    """Up to `limit` Google News headlines (India edition) for `query` from the last `days` days, newest first.
+    Relevance filters (code): with `aliases`, the headline itself must name the company (Google also matches article
+    bodies); templated price/rating/list pages are dropped (JUNK_TITLES); the same story from several outlets is kept
+    once (the newest). Headlines in `seen` (and their stories) are left out."""
     q = urllib.parse.urlencode({"q": f"{query} when:{days}d", "hl": "en-IN", "gl": "IN", "ceid": "IN:en"})
     feed = _get(NEWS_URL + q)
     if not feed:
         return []
-    out, seen = [], set()
+    items = []
     for it in ET.fromstring(feed).findall(".//item"):
         title, src = it.findtext("title") or "", it.findtext("source") or ""
         if src and title.endswith(" - " + src):
             title = title[: -len(src) - 3]
-        if not title or title.lower() in seen:
+        if not title or JUNK_TITLES.search(title) or (aliases and not _names_company(title, aliases)):
             continue
-        seen.add(title.lower())
         try:
             when = parsedate_to_datetime(it.findtext("pubDate")).date().isoformat()
         except (TypeError, ValueError):
             when = None
-        out.append({"title": title, "source": src, "date": when, "url": it.findtext("link")})
-    out.sort(key=lambda n: n["date"] or "", reverse=True)
-    return out[:MAX_HEADLINES]
+        items.append({"title": title, "source": src, "date": when, "url": it.findtext("link")})
+    items.sort(key=lambda n: n["date"] or "", reverse=True)
+    out, kept = [], [_words(n["title"], aliases or ()) for n in seen]
+    for n in items:
+        w = _words(n["title"], aliases or ())
+        if any(w and k and len(w & k) / min(len(w), len(k)) >= DUPLICATE_OVERLAP for k in kept):
+            continue
+        out.append(n)
+        kept.append(w)
+        if len(out) == limit:
+            break
+    return out
 
 
-def _search_name(company):
-    """'Reliance Industries Ltd' -> '"Reliance Industries"' (quoted, without the legal suffix)."""
-    name = re.sub(r"\b(Ltd|Limited|Ltd\.)\.?$", "", (company or "").strip(), flags=re.I).strip(" .,")
-    return f'"{name}"' if name else None
+def _search_name(company, symbol=None, listed_name=None):
+    """The Google News query for a company, any of: its quoted name without the legal suffix, the name with its
+    apostrophe ("Dr Reddy's": the exchange lists it as 'DR. REDDY S'), its first two words when the rest is generic
+    ("Paras Defence"), and its NSE symbol when the press may use it (PAYTM, TFCI). A one-word name (Cupid) also needs
+    a market word, or the search fills with films and people. news() then keeps the headlines that name the company."""
+    name = _name_stem(company)
+    words = name.split()
+    if not words:
+        return None
+    terms = [name]
+    owners = {m.lower() for m in re.findall(r"\b([A-Za-z]{2,}) S\b", listed_name or "")}
+    if owners:
+        terms.append(" ".join(w[:-1] + "'s" if w[:-1].lower() in owners and w[-1:].lower() == "s" else w
+                              for w in words))
+    if _short_name(words):
+        terms.append(_short_name(words))
+    sym = re.sub(r"LTD$", "", (symbol or "").upper())
+    if sym.isalpha() and len(sym) >= 4 and sym.lower() not in _norm(name).split():
+        terms.append(sym)
+    q = " OR ".join(f'"{t}"' for t in dict.fromkeys(terms))
+    return f"{q} {MARKET_WORDS}" if len(_norm(name).split()) == 1 else q
 
 
 # ---- DeepSeek -----------------------------------------------------------------------------------------------------
@@ -575,8 +677,12 @@ policy, geopolitics, a sector move, fund raising, corporate actions, ratings or 
 Reply with JSON only, exactly this shape:
 {{"summary": "at most 30 words: the main reason the stock is moving, or 'No clear catalyst in recent filings or news.'",
  "drivers": [{{"type": one of {json.dumps(DRIVER_TYPES)}, "text": "at most 25 words, specific", "src": "id of the item it comes from, e.g. F2 or N5"}}],
- "watch": ["at most 2 items of at most 20 words: upcoming events or risks to watch"]}}
+ "watch": ["at most 2 items of at most 20 words: upcoming events or risks to watch"],
+ "news": ["ids of the NEWS items worth reading, most important first"]}}
 List 0 to 4 drivers, most important first. Every driver must cite an item id that supports it.
+In news, list at most {SHOWN_HEADLINES} NEWS ids, one per story (for the same story from several outlets, the most
+informative headline). Leave out items about another company, person, film or place with a similar name, and items
+that only restate the price move or a rating. If none is worth reading, return an empty list.
 earnings_quality holds checks that code computed from the reported financials (red = likely problem, check = worth
 verifying, ok = passed): one-time income, other income, core profit, margins, revenue, cash conversion, receivables.
 Don't recompute them. If a red one bears on the move (for example a profit jump that came from one-time or other
@@ -591,6 +697,14 @@ Reply with JSON only, exactly this shape:
  "long_term": "at most 40 words: the structural story over recent months (policy, demand cycle, exports, costs, rates)",
  "drivers": [{{"horizon": "short" or "long", "type": one of {json.dumps(DRIVER_TYPES)}, "text": "at most 25 words", "src": "item id, e.g. S3 or L2"}}]}}
 List 0 to 4 drivers, most important first. Every driver must cite an item id."""
+
+NEWS_SYSTEM = f"""You help an Indian swing trader pick the news headlines worth reading about one listed company.
+{GUARD}
+Reply with JSON only, exactly this shape:
+{{"news": ["ids of the NEWS items worth reading, most important first"]}}
+List at most max_picks ids, one per story, and none for a story already in ALREADY_PICKED. Leave out items about another
+company, person, film or place with a similar name, and items that only restate the price move or a rating. If none
+is worth reading, return an empty list."""
 
 GUIDANCE_SYSTEM = f"""You read the transcript of an Indian listed company's earnings call and pull out management's
 forward-looking guidance.
@@ -637,7 +751,8 @@ def _facts_for_model(f):
 
 def stock_note(st, rec, groups, key, usage):
     filings = _items("F", rec["filings"], ("date", "title", "summary"))
-    headlines = _items("N", rec["news"], ("date", "title", "source"))
+    pool = _items("N", rec["news"], ("date", "title", "source"))
+    headlines = pool[:MAX_HEADLINES]
     sources = {i["id"]: r for i, r in zip(filings, rec["filings"])}
     sources.update({i["id"]: r for i, r in zip(headlines, rec["news"])})
     sec, ind = groups.get("sector", {}).get(st.get("sector")), groups.get("industry", {}).get(st.get("industry"))
@@ -649,8 +764,57 @@ def stock_note(st, rec, groups, key, usage):
                "earnings_quality": [{k: c[k] for k in ("level", "area", "text")} for c in (rec.get("quality") or {}).get("checks", [])],
                "FILINGS": filings, "NEWS": headlines}
     ans = ask_json(STOCK_SYSTEM, json.dumps(payload, ensure_ascii=False), key, usage)
+    picks = _picked(ans.get("news"), headlines, pool)
+    if picks is not None:
+        picks = _more_news(payload["stock"], rec, picks, key, usage)
     return {"summary": str(ans.get("summary") or "").strip(), "drivers": _resolve(ans.get("drivers"), sources),
-            "watch": [str(w) for w in (ans.get("watch") or []) if w][:2]}
+            "watch": [str(w) for w in (ans.get("watch") or []) if w][:2], "news": picks}
+
+
+def _picked(ids, batch, pool, have=()):
+    """The model's headline picks as positions in the stock's news list (`pool`): only ids from `batch`, each once,
+    not already in `have`. None (not a list) means it didn't answer, so the page falls back to the newest."""
+    if not isinstance(ids, list):
+        return None
+    allowed, pos = {h["id"] for h in batch}, {h["id"]: n for n, h in enumerate(pool)}
+    out = list(have)
+    for i in ids:
+        i = str(i).strip()
+        if i in allowed and pos[i] not in out:
+            out.append(pos[i])
+    return out[:SHOWN_HEADLINES]
+
+
+def _more_news(stock, rec, picks, key, usage):
+    """While the model has picked fewer than SHOWN_HEADLINES, show it the next MAX_HEADLINES older headlines, up to
+    NEWS_RETRIES times. When the NEWS_DAYS window runs out, search NEWS_DAYS_EXTENDED days once and carry on with the
+    older headlines found (added to rec["news"], so the picks point into it). A failed retry keeps the picks so far."""
+    shown, extended = min(MAX_HEADLINES, len(rec["news"])), False  # headlines the model has seen
+    for _ in range(NEWS_RETRIES):
+        if len(picks) >= SHOWN_HEADLINES:
+            break
+        if shown >= len(rec["news"]) and not extended and rec.get("news_query"):
+            extended = True
+            with _news_lock:
+                older = news(rec["news_query"], NEWS_DAYS_EXTENDED, name_aliases(rec.get("company_name"), stock["symbol"]),
+                             NEWS_POOL - len(rec["news"]), seen=rec["news"])
+                time.sleep(NEWS_GAP)
+            rec["news"].extend({**n, "extended": True} for n in older)
+            rec["news_days"] = NEWS_DAYS_EXTENDED
+        pool = _items("N", rec["news"], ("date", "title", "source"))
+        batch = pool[shown:shown + MAX_HEADLINES]
+        if not batch:
+            break
+        shown += len(batch)
+        payload = {"stock": stock, "max_picks": SHOWN_HEADLINES - len(picks),
+                   "ALREADY_PICKED": [pool[i]["title"] for i in picks], "NEWS": batch}
+        try:
+            ans = ask_json(NEWS_SYSTEM, json.dumps(payload, ensure_ascii=False), key, usage, max_tokens=300)
+        except Exception as e:
+            print(f"[triage] {stock.get('symbol')} more news: {e}")
+            break
+        picks = _picked(ans.get("news"), batch, pool, picks) or picks
+    return picks
 
 
 def group_note(kind, name, rec, key, usage):
@@ -741,8 +905,9 @@ def take_triage(con, force=False, now=None):
         rec.update(company_name=(scr or {}).get("name") or st.get("company"), screener_url=(scr or {}).get("url"),
                    filings=(scr or {}).get("filings", []), concall=(scr or {}).get("concall"),
                    quality=(scr or {}).get("quality"))
-        q = _search_name(rec["company_name"])
-        rec["news"] = news(q, 14) if q else []
+        q = _search_name(rec["company_name"], sym, st.get("company"))
+        rec["news_query"] = q
+        rec["news"] = news(q, NEWS_DAYS, name_aliases(rec["company_name"], sym), NEWS_POOL) if q else []
         time.sleep(NEWS_GAP)
         recs[sym] = rec
 
@@ -819,8 +984,10 @@ def load(con, snap_date):
     for r in con.execute("SELECT kind, name, snap_date, fetched_at, data FROM triage WHERE snap_date <= ?"
                          " ORDER BY snap_date", (snap_date,)):
         d = json.loads(r["data"])
-        if r["kind"] == "stock":  # the page shows 6 headlines; the notes link their own sources
-            out["stocks"][r["name"]] = {**d, "news": d.get("news", [])[:SHOWN_HEADLINES],
+        if r["kind"] == "stock":  # the page shows the model's headline picks (else the newest 6)
+            news_, picks = d.get("news", []), (d.get("ai") or {}).get("news")
+            shown = [news_[i] for i in picks if i < len(news_)] if isinstance(picks, list) else news_[:SHOWN_HEADLINES]
+            out["stocks"][r["name"]] = {**d, "news": shown, "news_picked": isinstance(picks, list),
                                         "date": r["snap_date"], "fetched_at": r["fetched_at"]}
         else:  # the group's headlines were the model's input; its notes carry the links they used
             out[r["kind"]][r["name"]] = {"ai": d.get("ai"), "model": d.get("model"), "date": r["snap_date"]}
