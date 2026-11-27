@@ -11,8 +11,9 @@ Code does the numbers, an LLM (DeepSeek) does the reading:
   and its latest concall transcript, read from the PDF (needs `pypdf`, else DeepSeek's fetch API, else skipped).
 - News (code): Google News headlines for the stock (last 14 days) and for its sector and industry
   (last 14 days and last 6 months), filtered: a stock's headline must name the company, templated price/rating/list
-  pages are dropped, and a story is kept once. The model then picks the stock headlines shown on the page, shown
-  older batches (and, once the 14 days run out, a 28-day search) while it has picked fewer than 6.
+  pages are dropped, and a story is kept once. The model then picks the stock headlines worth reading (older
+  batches and, once the 14 days run out, a 28-day search, while it has picked fewer than 6); the stock's note is
+  written from them, and they are the headlines shown on the page.
 - Notes (DeepSeek, needs DEEPSEEK_API_KEY): what is driving the stock, what moved its sector and industry over the
   short and the long term, and management's guidance from the concall. Without a key the code-only parts are
   still stored and shown.
@@ -677,12 +678,10 @@ policy, geopolitics, a sector move, fund raising, corporate actions, ratings or 
 Reply with JSON only, exactly this shape:
 {{"summary": "at most 30 words: the main reason the stock is moving, or 'No clear catalyst in recent filings or news.'",
  "drivers": [{{"type": one of {json.dumps(DRIVER_TYPES)}, "text": "at most 25 words, specific", "src": "id of the item it comes from, e.g. F2 or N5"}}],
- "watch": ["at most 2 items of at most 20 words: upcoming events or risks to watch"],
- "news": ["ids of the NEWS items worth reading, most important first"]}}
+ "watch": ["at most 2 items of at most 20 words: upcoming events or risks to watch"]}}
 List 0 to 4 drivers, most important first. Every driver must cite an item id that supports it.
-In news, list at most {SHOWN_HEADLINES} NEWS ids, one per story (for the same story from several outlets, the most
-informative headline). Leave out items about another company, person, film or place with a similar name, and items
-that only restate the price move or a rating. If none is worth reading, return an empty list.
+NEWS holds the headlines already picked as worth reading, most important first. Some can be up to four weeks old:
+check their dates, and when an older item is the main driver, say when it happened.
 earnings_quality holds checks that code computed from the reported financials (red = likely problem, check = worth
 verifying, ok = passed): one-time income, other income, core profit, margins, revenue, cash conversion, receivables.
 Don't recompute them. If a red one bears on the move (for example a profit jump that came from one-time or other
@@ -750,30 +749,31 @@ def _facts_for_model(f):
 
 
 def stock_note(st, rec, groups, key, usage):
+    """The stock's note. First the model picks the headlines worth reading (_pick_news: newest batches first, with
+    the 28-day search if needed); then it writes the summary, drivers and watch items from the filings and those
+    headlines. If picking fails, the note reads the newest MAX_HEADLINES instead and the page shows the newest."""
+    stock = {"symbol": st["symbol"], "company": rec.get("company_name") or st.get("company"),
+             "sector": st.get("sector"), "industry": st.get("industry"),
+             "change_1w_pct": _num(st.get("change_1w")), "change_1m_pct": _num(st.get("change_1m"))}
+    picks = _pick_news(stock, rec, key, usage)
+    chosen = [rec["news"][i] for i in picks] if picks is not None else rec["news"][:MAX_HEADLINES]
     filings = _items("F", rec["filings"], ("date", "title", "summary"))
-    pool = _items("N", rec["news"], ("date", "title", "source"))
-    headlines = pool[:MAX_HEADLINES]
+    headlines = _items("N", chosen, ("date", "title", "source"))
     sources = {i["id"]: r for i, r in zip(filings, rec["filings"])}
-    sources.update({i["id"]: r for i, r in zip(headlines, rec["news"])})
+    sources.update({i["id"]: r for i, r in zip(headlines, chosen)})
     sec, ind = groups.get("sector", {}).get(st.get("sector")), groups.get("industry", {}).get(st.get("industry"))
-    payload = {"stock": {"symbol": st["symbol"], "company": rec.get("company_name") or st.get("company"),
-                         "sector": st.get("sector"), "industry": st.get("industry"),
-                         "change_1w_pct": _num(st.get("change_1w")), "change_1m_pct": _num(st.get("change_1m"))},
-               "sector_status": sec, "industry_status": ind, "facts": _facts_for_model(rec["facts"]),
+    payload = {"stock": stock, "sector_status": sec, "industry_status": ind, "facts": _facts_for_model(rec["facts"]),
                "concall_guidance": (rec.get("guidance") or {}).get("guidance"),
                "earnings_quality": [{k: c[k] for k in ("level", "area", "text")} for c in (rec.get("quality") or {}).get("checks", [])],
                "FILINGS": filings, "NEWS": headlines}
     ans = ask_json(STOCK_SYSTEM, json.dumps(payload, ensure_ascii=False), key, usage)
-    picks = _picked(ans.get("news"), headlines, pool)
-    if picks is not None:
-        picks = _more_news(payload["stock"], rec, picks, key, usage)
     return {"summary": str(ans.get("summary") or "").strip(), "drivers": _resolve(ans.get("drivers"), sources),
             "watch": [str(w) for w in (ans.get("watch") or []) if w][:2], "news": picks}
 
 
 def _picked(ids, batch, pool, have=()):
     """The model's headline picks as positions in the stock's news list (`pool`): only ids from `batch`, each once,
-    not already in `have`. None (not a list) means it didn't answer, so the page falls back to the newest."""
+    not already in `have`. None if the answer isn't a list."""
     if not isinstance(ids, list):
         return None
     allowed, pos = {h["id"] for h in batch}, {h["id"]: n for n, h in enumerate(pool)}
@@ -785,12 +785,13 @@ def _picked(ids, batch, pool, have=()):
     return out[:SHOWN_HEADLINES]
 
 
-def _more_news(stock, rec, picks, key, usage):
-    """While the model has picked fewer than SHOWN_HEADLINES, show it the next MAX_HEADLINES older headlines, up to
-    NEWS_RETRIES times. When the NEWS_DAYS window runs out, search NEWS_DAYS_EXTENDED days once and carry on with the
-    older headlines found (added to rec["news"], so the picks point into it). A failed retry keeps the picks so far."""
-    shown, extended = min(MAX_HEADLINES, len(rec["news"])), False  # headlines the model has seen
-    for _ in range(NEWS_RETRIES):
+def _pick_news(stock, rec, key, usage):
+    """The headlines worth reading, as positions in rec["news"], most important first: the model is shown the newest
+    MAX_HEADLINES, then (while it has picked fewer than SHOWN_HEADLINES) the next MAX_HEADLINES older ones, up to
+    NEWS_RETRIES more times. When the NEWS_DAYS headlines run out, NEWS_DAYS_EXTENDED days are searched once for older
+    ones (added to rec["news"]). None if the first pick fails; a failed retry keeps the picks so far."""
+    picks, shown, extended = [], 0, False
+    for n in range(1 + NEWS_RETRIES):
         if len(picks) >= SHOWN_HEADLINES:
             break
         if shown >= len(rec["news"]) and not extended and rec.get("news_query"):
@@ -799,7 +800,7 @@ def _more_news(stock, rec, picks, key, usage):
                 older = news(rec["news_query"], NEWS_DAYS_EXTENDED, name_aliases(rec.get("company_name"), stock["symbol"]),
                              NEWS_POOL - len(rec["news"]), seen=rec["news"])
                 time.sleep(NEWS_GAP)
-            rec["news"].extend({**n, "extended": True} for n in older)
+            rec["news"].extend({**h, "extended": True} for h in older)
             rec["news_days"] = NEWS_DAYS_EXTENDED
         pool = _items("N", rec["news"], ("date", "title", "source"))
         batch = pool[shown:shown + MAX_HEADLINES]
@@ -810,10 +811,13 @@ def _more_news(stock, rec, picks, key, usage):
                    "ALREADY_PICKED": [pool[i]["title"] for i in picks], "NEWS": batch}
         try:
             ans = ask_json(NEWS_SYSTEM, json.dumps(payload, ensure_ascii=False), key, usage, max_tokens=300)
+            got = _picked(ans.get("news"), batch, pool, picks)
         except Exception as e:
-            print(f"[triage] {stock.get('symbol')} more news: {e}")
-            break
-        picks = _picked(ans.get("news"), batch, pool, picks) or picks
+            print(f"[triage] {stock.get('symbol')} news pick: {e}")
+            got = None
+        if got is None:
+            return None if n == 0 else picks
+        picks = got
     return picks
 
 
