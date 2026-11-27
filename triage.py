@@ -677,9 +677,10 @@ policy, geopolitics, a sector move, fund raising, corporate actions, ratings or 
 {GUARD}
 Reply with JSON only, exactly this shape:
 {{"summary": "at most 30 words: the main reason the stock is moving, or 'No clear catalyst in recent filings or news.'",
- "drivers": [{{"type": one of {json.dumps(DRIVER_TYPES)}, "text": "at most 25 words, specific", "src": "id of the item it comes from, e.g. F2 or N5"}}],
+ "drivers": [{{"type": one of {json.dumps(DRIVER_TYPES)}, "text": "at most 25 words, specific", "src": "id of the item it comes from, e.g. F2, N5 or SECTOR"}}],
  "watch": ["at most 2 items of at most 20 words: upcoming events or risks to watch"]}}
-List 0 to 4 drivers, most important first. Every driver must cite an item id that supports it.
+List 0 to 4 drivers, most important first. Every driver must cite an item id that supports it. A driver that comes
+from sector_status or industry_status (breadth, rank, trend, returns) cites SECTOR or INDUSTRY, never a filing or headline.
 NEWS holds the headlines already picked as worth reading, most important first. Some can be up to four weeks old:
 check their dates, and when an older item is the main driver, say when it happened.
 earnings_quality holds checks that code computed from the reported financials (red = likely problem, check = worth
@@ -762,6 +763,11 @@ def stock_note(st, rec, groups, key, usage):
     sources = {i["id"]: r for i, r in zip(filings, rec["filings"])}
     sources.update({i["id"]: r for i, r in zip(headlines, chosen)})
     sec, ind = groups.get("sector", {}).get(st.get("sector")), groups.get("industry", {}).get(st.get("industry"))
+    for sid, kind, name, g in (("SECTOR", "Sector", st.get("sector"), sec), ("INDUSTRY", "Industry", st.get("industry"), ind)):
+        if g:  # code-computed status: a source without a link
+            sources[sid] = {"url": None, "date": groups.get("date"),
+                            "title": f"{kind} status: {name} ({g.get('label') or 'unranked'}"
+                                     + (f", #{g['rank']} of {g['of']})" if g.get("rank") else ")")}
     payload = {"stock": stock, "sector_status": sec, "industry_status": ind, "facts": _facts_for_model(rec["facts"]),
                "concall_guidance": (rec.get("guidance") or {}).get("guidance"),
                "earnings_quality": [{k: c[k] for k in ("level", "area", "text")} for c in (rec.get("quality") or {}).get("checks", [])],

@@ -732,7 +732,8 @@ function groupChip(kind, name, s) {
   return `<span class="tchip ${g.label.toLowerCase()}" title="${esc(groupTip(kind, name, g, s))}">${kind === "sector" ? "Sector" : "Industry"} ${esc(g.label)}${arrow}</span>`;
 }
 const driverItem = d => `<li><span class="ttype">${esc(DRIVER[d.type] || "Other")}</span>${esc(d.text)}
-  ${d.url ? `<span class="tsrc">· ${tlink(d.url, esc((d.src_date ? shortDate(d.src_date) + " " : "") + (d.src_title || "source").slice(0, 70)))}</span>` : ""}</li>`;
+  ${d.url ? `<span class="tsrc">· ${tlink(d.url, esc((d.src_date ? shortDate(d.src_date) + " " : "") + (d.src_title || "source").slice(0, 70)))}</span>`
+    : d.src_title ? `<span class="tsrc">· ${esc(d.src_title)}</span>` : ""}</li>`;
 function groupBlock(kind, name, t) {
   const s = t.status, g = s?.[kind]?.[name], ai = t[kind]?.[name]?.ai;
   if (!name || (!g && !ai)) return "";
