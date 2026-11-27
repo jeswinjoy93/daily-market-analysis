@@ -157,8 +157,41 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
 .chart .tag rect { fill: var(--ink); }
 .chart .xh { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
 .chempty { color: var(--muted); padding: 60px 0; text-align: center; }
+/* Triage notes (triage.py): a third column on wide windows, scrolling within the chart's height; below the chart otherwise */
+.snotes { grid-column: 2; border-top: 1px solid var(--border); padding: 14px 16px 16px; min-width: 0; font-size: 13px; color: var(--ink-2); }
+@media (min-width: 1280px) {
+  .setups { grid-template-columns: 250px minmax(0, 1fr) 360px; }
+  .snotes { grid-column: 3; border-top: 0; border-left: 1px solid var(--border); height: 0; min-height: 100%; overflow-y: auto; }
+}
+.snotes h3 { font-size: 12px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 16px 0 6px; }
+.snotes h3:first-child { margin-top: 0; }
+.snotes p { margin: 4px 0; line-height: 1.5; }
+.snotes ul { margin: 4px 0; padding-left: 16px; }
+.snotes li { margin: 3px 0; line-height: 1.45; }
+.snotes a { color: var(--ink-2); }
+.snotes .tsum { color: var(--ink); font-size: 14px; line-height: 1.5; }
+.snotes .tmeta, .snotes .tsrc { color: var(--muted); font-size: 12px; }
+.tchips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; }
+.tchip, .tlabel { display: inline-block; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--axis); font-size: 12px; white-space: nowrap; cursor: default; }
+.tchip[title] { cursor: help; }
+.tchip.strong, .tlabel.strong { color: var(--up-text); border-color: var(--up-text); }
+.tchip.weak, .tlabel.weak { color: var(--down-text); border-color: var(--down-text); }
+.tchip.warn { color: var(--down-text); border-color: var(--down-text); font-weight: 600; }
+.ttype { display: inline-block; font-size: 11px; font-weight: 600; color: var(--ink); background: var(--mid); border-radius: 4px; padding: 0 5px; margin-right: 4px; }
+.tgroup { margin: 8px 0 12px; }
+.tgh { display: flex; align-items: center; gap: 8px; color: var(--ink); font-weight: 600; }
+.ttable { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; margin: 2px 0; }
+.ttable th, .ttable td { padding: 3px 4px; text-align: right; border-bottom: 1px solid var(--grid); font-weight: 400; }
+.ttable th { color: var(--muted); font-size: 11px; }
+.ttable th:first-child, .ttable td:first-child { text-align: left; }
+.thealth { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px 10px; font-variant-numeric: tabular-nums; }
+.thealth span { color: var(--muted); font-size: 11px; display: block; }
+.tflags { color: var(--down-text); }
+.ttable td.up { color: var(--up-text); } .ttable td.down { color: var(--down-text); }
+.tfoot { margin-top: 16px; color: var(--muted); font-size: 11px; line-height: 1.45; }
 @media (max-width: 720px) {
   .setups { grid-template-columns: minmax(0, 1fr); }
+  .snotes { grid-column: 1; padding: 12px; }
   .schart { padding: 12px 12px 8px; }
   .chd { grid-template-columns: minmax(0, 1fr); }  /* controls go to their own row */
   .ctools { flex-wrap: wrap; }
@@ -206,6 +239,7 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
     <section class="card setups">
       <div class="slist" id="setupList" role="listbox" aria-label="Setup stocks"></div>
       <div class="schart" id="setupChart"></div>
+      <div class="snotes" id="setupNotes" aria-label="Triage notes"></div>
     </section>
   </div>
 
@@ -575,7 +609,7 @@ function setupsFailed(e) {
   if (state.page !== "setups") return;
   $("subtitle").textContent = "India · Setups";
   $("setupList").innerHTML = `<div class="empty" style="padding:8px">Could not load the setups: ${esc(e.message)}</div>`;
-  $("setupChart").innerHTML = "";
+  $("setupChart").innerHTML = ""; renderNotes(null);
 }
 
 const selIndex = () => curList().findIndex(s => s.symbol === setups.sel);
@@ -593,7 +627,7 @@ function renderSetups() {
   if (!d?.date) {
     $("subtitle").textContent = "India · Setups";
     $("setupList").innerHTML = `<div class="empty" style="padding:8px">No scans stored yet — they appear after the next update.</div>`;
-    $("setupChart").innerHTML = "";
+    $("setupChart").innerHTML = ""; renderNotes(null);
     return;
   }
   const tip = "Prices and the last bar are intraday. The scans themselves are from the close of the date shown.";
@@ -629,6 +663,7 @@ function sectorTag(sector) {
 }
 function renderSetupChart() {
   const el = $("setupChart"), list = curList(), i = selIndex(), st = list[i];
+  renderNotes(st);
   if (!st) { el.innerHTML = `<div class="chempty">Nothing to chart.</div>`; setups.chart = null; return; }
   const tvSym = `${st.exchange || "NSE"}:${st.symbol.replace(/[^A-Za-z0-9]/g, "_")}`;
   const stats = [
@@ -655,6 +690,94 @@ function renderSetupChart() {
   $("freqSeg").onclick = e => { const f = e.target.dataset.freq; if (f && f !== setups.freq) { setups.freq = f; saveChartPrefs(); renderSetupChart(); } };
   $("rangeSeg").onclick = e => { const r = e.target.dataset.range; if (r) { setups.range[setups.freq] = r; saveChartPrefs(); renderSetupChart(); } };
   drawChart();
+}
+
+// ---- Triage notes (triage.py): sector/industry status at 15%, what's driving the stock (DeepSeek, with sources),
+// results, ownership, health, concall guidance, filings and headlines. Shown beside (or below) the chart.
+const safeUrl = u => /^https?:\/\//i.test(u || "") ? u : null;
+const tlink = (u, html) => safeUrl(u) ? `<a href="${esc(u)}" target="_blank" rel="noopener">${html}</a>` : html;
+const pts = v => v == null ? "—" : (v > 0 ? "+" : "") + v.toFixed(1);
+const shortDate = d => d ? new Date(d + "T00:00:00").toLocaleDateString(undefined, { day: "numeric", month: "short" }) : "";
+const DRIVER = { results: "Results", order: "Order", capacity: "Capacity", policy: "Policy", geopolitics: "Geopolitics",
+  sector: "Sector", fundraise: "Fund raise", corporate: "Corporate", rating: "Rating", other: "Other" };
+function groupTip(kind, name, g, s) {
+  const p = g.perf || {};
+  return [`${name}: ${fmt(g.value)} of its ${g.stock_count} stocks within ${s.within}% of their 52W high`,
+    g.rank ? `#${g.rank} of ${g.of} ${kind === "sector" ? "sectors" : "industries"} (top third Strong, bottom third Weak)` : "Too few stocks to rank",
+    `${pts(g.change_1d)} pts since the previous session, ${pts(g.change_5d)} pts over ${s.base_sessions ?? "—"} sessions`,
+    `Returns 1M ${fmtPct(p["1M"])} · 3M ${fmtPct(p["3M"])} · 6M ${fmtPct(p["6M"])} · 1Y ${fmtPct(p["1Y"])}`,
+    `${p.above_ema_200 == null ? "—" : Math.round(p.above_ema_200) + "%"} of its stocks above EMA 200 (long trend: ${g.long_trend || "—"})`].join("\n");
+}
+function groupChip(kind, name, s) {
+  const g = s?.[kind]?.[name];
+  if (!g?.label) return "";
+  const arrow = g.short_trend === "Rising" ? " ↑" : g.short_trend === "Falling" ? " ↓" : "";
+  return `<span class="tchip ${g.label.toLowerCase()}" title="${esc(groupTip(kind, name, g, s))}">${kind === "sector" ? "Sector" : "Industry"} ${esc(g.label)}${arrow}</span>`;
+}
+const driverItem = d => `<li><span class="ttype">${esc(DRIVER[d.type] || "Other")}</span>${esc(d.text)}
+  ${d.url ? `<span class="tsrc">· ${tlink(d.url, esc((d.src_date ? shortDate(d.src_date) + " " : "") + (d.src_title || "source").slice(0, 70)))}</span>` : ""}</li>`;
+function groupBlock(kind, name, t) {
+  const s = t.status, g = s?.[kind]?.[name], ai = t[kind]?.[name]?.ai;
+  if (!name || (!g && !ai)) return "";
+  const meta = g ? [`${fmt(g.value)} within ${s.within}%`, g.rank ? `#${g.rank} of ${g.of}` : "unranked",
+    `${pts(g.change_5d)} pts in ${s.base_sessions ?? "—"} sessions`, `6M ${fmtPct(g.perf?.["6M"])}`, g.long_trend].filter(Boolean).join(" · ") : "";
+  return `<div class="tgroup"><div class="tgh">${esc(name)}${g?.label ? `<span class="tlabel ${g.label.toLowerCase()}">${esc(g.label)}</span>` : ""}</div>
+    ${meta ? `<div class="tmeta">${esc(meta)}</div>` : ""}
+    ${ai?.short_term ? `<p><b>Short term:</b> ${esc(ai.short_term)}</p>` : ""}
+    ${ai?.long_term ? `<p><b>Long term:</b> ${esc(ai.long_term)}</p>` : ""}
+    ${ai?.drivers?.length ? `<ul>${ai.drivers.slice(0, 3).map(driverItem).join("")}</ul>` : ""}</div>`;
+}
+function renderNotes(st) {
+  const el = $("setupNotes");
+  if (!el) return;
+  const t = setups.data?.triage;
+  if (!st || !t) { el.innerHTML = ""; el.hidden = true; return; }
+  el.hidden = false;
+  const rec = t.stocks?.[st.symbol], f = rec?.facts || {}, ai = rec?.ai;
+  const chips = [groupChip("sector", st.sector, t.status), groupChip("industry", st.industry, t.status)];
+  if (f.next_results) {
+    const days = Math.round((new Date(f.next_results + "T00:00:00") - new Date(new Date().toDateString())) / 864e5);
+    if (days >= 0) chips.push(`<span class="tchip${days <= 14 ? " warn" : ""}" title="Next results: an estimate from Trendvue, not a confirmed board meeting">Results ~${esc(shortDate(f.next_results))}${days <= 14 ? ` (${days}d)` : ""}</span>`);
+  }
+  if (f.growth) chips.push(`<span class="tchip${f.growth === "Accelerating" ? " strong" : f.growth === "Declining" ? " weak" : ""}" title="The latest quarter's YoY sales and EPS growth vs the quarter before">Growth ${esc(f.growth)}</span>`);
+  let h = `<h3>Triage</h3><div class="tchips">${chips.join("")}</div>`;
+  if (!rec) {
+    h += `<p class="tmeta">No notes for ${esc(st.symbol)} yet: they're written after the close.</p>`;
+  } else {
+    h += `<h3>What's driving it</h3>`;
+    if (ai) {
+      h += `<p class="tsum">${esc(ai.summary || "—")}</p>`;
+      if (ai.drivers?.length) h += `<ul>${ai.drivers.map(driverItem).join("")}</ul>`;
+      if (ai.watch?.length) h += `<p><b>Watch:</b> ${ai.watch.map(esc).join(" · ")}</p>`;
+    } else h += `<p class="tmeta">No AI notes for this session${rec.model ? "" : " (no DeepSeek key set)"}. The filings and headlines are below.</p>`;
+  }
+  h += `<h3>Sector and industry</h3>` + (groupBlock("sector", st.sector, t) + groupBlock("industry", st.industry, t) || `<p class="tmeta">—</p>`);
+  if (rec) {
+    const qs = (f.quarters || []).slice(-4).reverse();
+    if (qs.length) h += `<h3>Quarterly results</h3><table class="ttable"><tr><th>Quarter</th><th>Sales YoY</th><th>EPS YoY</th><th>OPM</th></tr>
+      ${qs.map(q => `<tr><td>${esc(q.month || q.q || "")}</td><td class="${cls(q.sales_yoy)}">${fmtPct(q.sales_yoy)}</td><td class="${cls(q.eps_yoy)}">${fmtPct(q.eps_yoy)}</td><td>${q.opm == null ? "—" : q.opm.toFixed(1) + "%"}</td></tr>`).join("")}</table>`;
+    const o = f.ownership;
+    if (o) h += `<h3>Ownership</h3><table class="ttable"><tr><th></th><th>Holding</th><th>1Q change</th><th>${o.fii?.quarters || 4}Q change</th></tr>
+      ${[["Promoters", o.promoters], ["FIIs", o.fii], ["DIIs", o.dii]].filter(r => r[1]).map(([k, v]) => `<tr><td>${k}</td><td>${v.now.toFixed(2)}%</td><td class="${cls(v.chg_q)}">${pts(v.chg_q)}</td><td class="${cls(v.chg_4q)}">${pts(v.chg_4q)}</td></tr>`).join("")}</table>`;
+    const hl = f.health;
+    if (hl) {
+      const cell = (k, v) => `<div><span>${k}</span>${v ?? "—"}</div>`;
+      h += `<h3>Financial health</h3><div class="thealth">${cell("P/E", hl.pe)}${cell("Debt/equity", hl.de)}${cell("Interest cover", hl.icr == null ? null : hl.icr + "x")}
+        ${cell("ROCE", hl.roce == null ? null : hl.roce + "%")}${cell("ROE", hl.roe == null ? null : hl.roe + "%")}${cell("FCF", hl.fcf_cr == null ? null : "₹" + hl.fcf_cr.toLocaleString("en-IN") + " cr")}</div>`;
+      if (f.flags?.length) h += `<ul class="tflags">${f.flags.map(x => `<li>${esc(x)}</li>`).join("")}</ul>`;
+    }
+    const g = rec.guidance, cc = rec.concall;
+    if (g?.guidance?.length || cc) {
+      h += `<h3>Concall${cc?.month ? " · " + esc(cc.month) : ""}</h3>`;
+      if (g?.guidance?.length) h += `<ul>${g.guidance.map(x => `<li>${esc(x)}</li>`).join("")}</ul>${g.tone ? `<p class="tmeta">Tone: ${esc(g.tone)}</p>` : ""}`;
+      else if (cc) h += `<p class="tmeta">No guidance read from this call.</p>`;
+      if (cc) h += `<p class="tsrc">${[cc.transcript && tlink(cc.transcript, "Transcript"), cc.ppt && tlink(cc.ppt, "Presentation")].filter(Boolean).join(" · ")}</p>`;
+    }
+    if (rec.filings?.length) h += `<h3>Latest filings</h3><ul>${rec.filings.map(x => `<li>${esc(shortDate(x.date))} · ${tlink(x.url, esc(x.title))}${x.summary ? `<div class="tmeta">${esc(x.summary)}</div>` : ""}</li>`).join("")}</ul>`;
+    if (rec.news?.length) h += `<h3>Headlines</h3><ul>${rec.news.slice(0, 6).map(x => `<li>${esc(shortDate(x.date))} · ${tlink(x.url, esc(x.title))} <span class="tsrc">${esc(x.source || "")}</span></li>`).join("")}</ul>`;
+    h += `<p class="tfoot">Notes of ${esc(fmtDate(rec.date))}${rec.model ? ` · AI notes by ${esc(rec.model)}, from the filings and headlines listed` : ""}. Numbers from Trendvue, filings from screener.in, headlines from Google News. Check the sources before you trade.${rec.screener_url ? " " + tlink(rec.screener_url, "screener.in ↗") : ""}</p>`;
+  }
+  el.innerHTML = h;
 }
 
 // OHLC bars on a log price scale with EMA 20/50/200 and a volume pane, as on Trendvue. Hover for a bar's values.

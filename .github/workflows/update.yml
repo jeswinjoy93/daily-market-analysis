@@ -60,9 +60,17 @@ jobs:
             fi
           done
 
+      # Optional: lets the Setups triage read concall transcripts (PDFs) itself. Without it, triage.py uses
+      # DeepSeek's fetch API for them, or skips the guidance.
+      - name: Install pypdf
+        if: github.event_name != 'push'
+        run: python3 -m pip install --quiet --user --break-system-packages "pypdf==5.1.0" || echo "pypdf not installed; continuing without it"
+
       - name: Fetch new data
         id: fetch
         if: github.event_name != 'push'
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}   # Setups triage notes; without it only the code-only parts
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ] && [ "${{ inputs.force }}" = "true" ]; then
             python3 market.py snapshot in,us

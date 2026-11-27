@@ -5,7 +5,7 @@
 While running, it also fetches each market automatically on its weekdays: a live (provisional) snapshot
 every LIVE_REFRESH_MIN minutes during that market's hours, then every 30 min after its close until that
 day's final data is stored (see market.MARKETS and market.snapshot_due). The Setups scans (India) are
-fetched on the same loop when due (market.setups_due).
+fetched on the same loop when due (market.setups_due), and after the close their triage notes (triage.triage_due).
 """
 import json
 import os
@@ -17,6 +17,7 @@ from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 import market
+import triage
 
 PORT = int(os.environ.get("PORT", 8050))
 STATIC = market.BASE / "static"
@@ -120,6 +121,12 @@ def auto_snapshot_loop():
                 print("[auto setups]", refresh_setups(), flush=True)
         except Exception as e:
             print("[auto setups] failed:", e, flush=True)
+        try:  # notes on the setups, after the close (needs DEEPSEEK_API_KEY for the AI part)
+            with closing(market.connect("in")) as con:
+                if triage.triage_due(con):
+                    print("[auto triage]", triage.take_triage(con), flush=True)
+        except Exception as e:
+            print("[auto triage] failed:", e, flush=True)
         time.sleep(LIVE_REFRESH_MIN * 60 if busy else 1800)
 
 

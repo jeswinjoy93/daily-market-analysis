@@ -9,7 +9,8 @@ During market hours the numbers are **live**, calculated from current prices.
 
 India's data comes from [Trendvue Segment Analysis](https://trendvue.in/segment-analysis?groupBy=sector_performance&sectorDrillMode=industries&metric=near_52w_high&p_near_52w_high=near_52w_10);
 the US data from TradingView's stock screener.
-It has no dependencies beyond the macOS system `python3` (3.9+).
+It has no dependencies beyond the macOS system `python3` (3.9+). Optional: `pypdf` lets the Setups triage read
+concall transcripts itself, and a DeepSeek API key adds its AI notes (see [Triage notes](#triage-notes-setups-page)).
 
 ## Run
 
@@ -150,6 +151,37 @@ exported as `data/setups.json` (~650 KB, ~240 KB gzipped). A setups failure does
 To change the scans, edit `SETUP_SCANS` / `SETUP_FILTER` (scan ids are in `https://trendvue.in/api/daily_scans`);
 `SETUP_ABOVE_EMA` sets the EMA rule (`"ema20"`, `"ema50"`, `"ema200"`, or `None` to turn it off).
 
+## Triage notes (Setups page)
+
+Beside the chart (below it on narrower windows), each setup stock gets notes, written once per setups session after
+India's close by `triage.py`. Code does the numbers; [DeepSeek](https://api-docs.deepseek.com/) (`deepseek-flash`)
+does the reading.
+
+| Note | From | How |
+|---|---|---|
+| **Sector / Industry Strong, Neutral or Weak** (↑/↓ = rising/falling) | This dashboard's own data | Rank on % of stocks within **15%** of their 52W high (₹1,000 cr universe): top third Strong, bottom third Weak. Arrow: a change of 3+ pts over the last 5 sessions. Hover for the numbers, the 1M–1Y returns and % above EMA 200 (Trendvue's sector/industry rows). |
+| **What's driving it**: a summary, up to 4 drivers (results, order, capacity, policy, geopolitics, sector, fund raise, corporate, rating) and what to watch | DeepSeek, from the filings and headlines below | Each driver links the filing or headline it came from; a driver the model can't tie to one is dropped. |
+| **Sector and industry story**: short term (2 weeks) and long term (6 months) | DeepSeek, from Google News headlines | Same, with sources. |
+| **Quarterly results, ownership, financial health**, growth (Accelerating / Slowing / Mixed / Declining), red flags, next results date | Trendvue (`/api/stock_bundle/<symbol>`) | Computed in code. The results date is Trendvue's estimate, not a confirmed board meeting: marked red within 14 days. |
+| **Concall guidance** | The latest concall transcript (a BSE PDF linked on screener.in) | Read with `pypdf` if installed, else DeepSeek's fetch API; summarised by DeepSeek once per transcript. |
+| **Latest filings** | The stock's screener.in page (its 5 latest BSE/NSE announcements, with screener's one-line summaries) | |
+| **Headlines** | Google News (India), last 14 days | |
+
+- **Setup:** put a DeepSeek API key in `DEEPSEEK_API_KEY` (locally: `export DEEPSEEK_API_KEY=…` before `python3 server.py`;
+  on GitHub: Settings → Secrets and variables → Actions → New repository secret). Without a key everything except
+  the DeepSeek notes is still collected and shown. `DEEPSEEK_MODEL` picks another model.
+- **When:** after India's close, once the latest setups are final (`market.py auto`, the local server's loop, or
+  `python3 market.py triage [force]`). Only stocks without notes are done, so a run costs nothing once a session is done.
+  A stock whose notes fail is retried up to 3 times. About 5 minutes for ~20 stocks (the fetches are spaced out).
+- **Cost:** about 1,500 tokens per stock or group and ~13,000 per new transcript: roughly US$0.10 the first night
+  and US$0.03–0.05 after, at DeepSeek's peak prices. Each run prints its token use and cost estimate.
+- **Public:** the notes are exported with the setups (`data/setups.json`), so they're on the public site.
+- **Limits:** BSE's and NSE's own APIs block automated requests, so filings come from screener.in, which shows only
+  the latest 5 announcements without a login (its "Important" tab and concall summaries need one, and aren't used).
+  screener.in's terms may not allow automated use; it's one page per stock per day, spaced 2s apart.
+  Pledged shares aren't covered. AI notes can be wrong: check the linked sources before trading.
+- Stored in the India database's `triage` table, one row per setups session and stock, sector or industry.
+
 ## TradingView export
 
 **Copy for TradingView** and **↓ .txt** export the stocks in the current view, at the selected X%, as a watchlist
@@ -242,12 +274,14 @@ The databases are `data/market.db` (India) and `data/market_us.db` (US). Set `MA
 | `snapshots` | One row per trading session (`snap_date`, `fetched_at`, `provisional` = 1 for live data) |
 | `segment_values` | India only: Trendvue's numbers per sector/industry for all five thresholds, plus the full raw JSON row |
 | `setups` | India only: per session, each setup's scan size and stocks after the filters (JSON), plus their chart bars for the latest session |
+| `triage` | India only: per setups session, notes on each setup stock and its sector and industry (facts, filings, headlines, DeepSeek notes) |
 | `stock_values` | Per stock per session: symbol, company, industry, sector, exchange, `pct_from_52w_high`, `change_1d`/`_1w`/`_1m`, `market_cap_cr` (₹ crore; US$ million for the US), plus the `price` and `high_52w` used |
 
 ## Files
 
 - `market.py`: per-market settings, India fetching, storage, comparison logic and static export, plus a command-line interface.
 - `us.py`: the US fetch from TradingView's screener.
+- `triage.py`: the Setups triage notes (Trendvue, screener.in, Google News, DeepSeek).
 - `server.py`: the web server and the automatic live and end-of-day fetches.
 - `.github/workflows/update.yml`: the scheduled GitHub Pages build.
 - `static/index.html`: the dashboard (Breadth and Setups pages) and the TradingView export.

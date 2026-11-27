@@ -6,6 +6,7 @@ Usage (MARKET = in | us, default in; MARKETS = comma-separated, e.g. in,us):
     python3 market.py auto [MARKETS]          # fetch each market only if due (market hours, or after the close until final)
                                               # (with India, both also fetch the Setups scans: see take_setups)
     python3 market.py setups                  # fetch the Setups scans (India) now
+    python3 market.py triage [force]          # notes on the latest setups' stocks now (see triage.py)
     python3 market.py compare [METRIC] [MARKET]   # print latest vs previous in the terminal
     python3 market.py export DIR [MARKETS]    # static site (index.html + data/<market>/*.json); default: markets with data
     python3 market.py next-wait [MARKETS]     # seconds until the next update is due (used by the GitHub workflow)
@@ -117,6 +118,14 @@ CREATE TABLE IF NOT EXISTS setups (            -- India: each SETUP_SCANS scan f
     live        INTEGER NOT NULL DEFAULT 0,    -- fetched during market hours: prices and the last bar are intraday
     data        TEXT NOT NULL,                 -- JSON: the setups (scan sizes, symbols) and their stocks
     charts      TEXT                           -- JSON: daily and weekly bars per stock; latest session only
+);
+CREATE TABLE IF NOT EXISTS triage (            -- India: notes on the setups' stocks and their sectors/industries (triage.py)
+    snap_date   TEXT NOT NULL,                 -- the setups session
+    kind        TEXT NOT NULL,                 -- 'stock' | 'sector' | 'industry'
+    name        TEXT NOT NULL,                 -- symbol, or sector/industry name
+    fetched_at  TEXT NOT NULL,
+    data        TEXT NOT NULL,                 -- JSON: facts, filings, news, and the DeepSeek notes (null without a key)
+    PRIMARY KEY (snap_date, kind, name)
 );
 """
 
@@ -663,8 +672,9 @@ def setups(con):
         first, runs = since[st["symbol"]]
         sessions = sum(1 for b in charts.get(st["symbol"], {}).get("daily") or [] if first <= b[0] <= latest)
         st.update(since=first, age=sessions or runs)
+    import triage  # here, not at the top: triage imports this module
     return {"date": latest, "fetched_at": row["fetched_at"], "live": bool(row["live"]),
-            **data, "bar_fields": BAR_FIELDS, "charts": charts}
+            **data, "bar_fields": BAR_FIELDS, "charts": charts, "triage": triage.load(con, latest)}
 
 
 def markets_with_data():
@@ -769,12 +779,26 @@ if __name__ == "__main__":
                     except Exception as e:
                         print(f"[setups] failed: {e}", file=sys.stderr)
                         failed.append("setups")
+                # Triage notes on the setups (after the close, once per setups session). A failure doesn't fail
+                # the run: the notes are extra, and the next run tries again.
+                import triage
+                if triage.triage_due(con):
+                    try:
+                        res = triage.take_triage(con)
+                        print("[triage]", json.dumps(res))
+                        changed = changed or res["stored"]
+                    except Exception as e:
+                        print(f"[triage] failed: {e}", file=sys.stderr)
         _github_output(changed=str(changed).lower())
         if failed:
             sys.exit(f"Fetch failed for {failed}")
     elif cmd == "setups":
         with closing(connect("in")) as con:
             print(json.dumps(take_setups(con)))
+    elif cmd == "triage":  # triage the latest setups now; "force" redoes the stocks already done
+        import triage
+        with closing(connect("in")) as con:
+            print(json.dumps(triage.take_triage(con, force=arg == "force")))
     elif cmd == "next-wait":
         print(next_wait_seconds(_markets_arg(arg, "in")))
     elif cmd == "export":
