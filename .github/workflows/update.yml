@@ -26,6 +26,10 @@ on:
         description: "Also write the Setups triage notes now (normally after the close), for stocks without notes"
         type: boolean
         default: false
+      redo:
+        description: "With triage: redo the notes that already exist for the current setups"
+        type: boolean
+        default: false
   push:
     branches: [main]   # code changes: rebuild the site from the stored data
 
@@ -87,7 +91,7 @@ jobs:
         if: "!cancelled() && github.event_name == 'workflow_dispatch' && inputs.triage"
         env:
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
-        run: python3 market.py triage
+        run: python3 market.py triage ${{ inputs.redo && 'force' || '' }}
 
       # !cancelled(): if one market's fetch failed, still save and publish the other's new data.
       - name: Save databases

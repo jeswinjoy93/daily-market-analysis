@@ -153,8 +153,9 @@ To change the scans, edit `SETUP_SCANS` / `SETUP_FILTER` (scan ids are in `https
 
 ## Triage notes (Setups page)
 
-Beside the chart (below it on narrower windows), each setup stock gets notes, written once per setups session after
-India's close by `triage.py`. Code does the numbers; [DeepSeek](https://api-docs.deepseek.com/) (`deepseek-flash`)
+The **Chart | Notes** switch above the chart (or the **N** key; remembered between visits) swaps the chart for each
+setup stock's notes, at the same full width: the story on the left, the numbers and sources on the right (one column
+on narrow windows). The notes are written once per setups session after India's close by `triage.py`. Code does the numbers; [DeepSeek](https://api-docs.deepseek.com/) (`deepseek-flash`)
 does the reading.
 
 | Note | From | How |

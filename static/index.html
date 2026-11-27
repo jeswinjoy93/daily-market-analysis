@@ -157,14 +157,13 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
 .chart .tag rect { fill: var(--ink); }
 .chart .xh { stroke: var(--muted); stroke-width: 1; stroke-dasharray: 3 3; pointer-events: none; }
 .chempty { color: var(--muted); padding: 60px 0; text-align: center; }
-/* Triage notes (triage.py): a third column on wide windows, scrolling within the chart's height; below the chart otherwise */
-.snotes { grid-column: 2; border-top: 1px solid var(--border); padding: 14px 16px 16px; min-width: 0; font-size: 13px; color: var(--ink-2); }
-@media (min-width: 1280px) {
-  .setups { grid-template-columns: 250px minmax(0, 1fr) 360px; }
-  .snotes { grid-column: 3; border-top: 0; border-left: 1px solid var(--border); height: 0; min-height: 100%; overflow-y: auto; }
-}
-.snotes h3 { font-size: 12px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 16px 0 6px; }
-.snotes h3:first-child { margin-top: 0; }
+/* Triage notes (triage.py): in place of the chart (Chart | Notes), the story on the left and the numbers on the right */
+.snotes { min-width: 0; font-size: 13.5px; color: var(--ink-2); padding-top: 4px; }
+.tcols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 36px; }
+.tcol { min-width: 0; }
+@media (max-width: 1100px) { .tcols { grid-template-columns: minmax(0, 1fr); } }
+.snotes h3 { font-size: 12px; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin: 18px 0 6px; }
+.tcol > h3:first-child { margin-top: 6px; }
 .snotes p { margin: 4px 0; line-height: 1.5; }
 .snotes ul { margin: 4px 0; padding-left: 16px; }
 .snotes li { margin: 3px 0; line-height: 1.45; }
@@ -191,7 +190,6 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
 .tfoot { margin-top: 16px; color: var(--muted); font-size: 11px; line-height: 1.45; }
 @media (max-width: 720px) {
   .setups { grid-template-columns: minmax(0, 1fr); }
-  .snotes { grid-column: 1; padding: 12px; }
   .schart { padding: 12px 12px 8px; }
   .chd { grid-template-columns: minmax(0, 1fr); }  /* controls go to their own row */
   .ctools { flex-wrap: wrap; }
@@ -239,7 +237,6 @@ h2 .dot { width: 10px; height: 10px; border-radius: 3px; }
     <section class="card setups">
       <div class="slist" id="setupList" role="listbox" aria-label="Setup stocks"></div>
       <div class="schart" id="setupChart"></div>
-      <div class="snotes" id="setupNotes" aria-label="Triage notes"></div>
     </section>
   </div>
 
@@ -546,7 +543,8 @@ $("tvDownload").addEventListener("click", () => {
 // Trendvue's watchlist; the chart header names the scans it's in. ↑/↓ (or ‹ ›) flip through the list.
 const RANGES = { daily: { "1M": 22, "3M": 66, "6M": 132, "1Y": 252 }, weekly: { "6M": 26, "1Y": 52, "3Y": 156, "5Y": 260 } };
 const EMAS = [["ema20", "EMA 20"], ["ema50", "EMA 50"], ["ema200", "EMA 200"]];
-const setups = { data: null, strong: new Map(), strongMetric: null, sel: null, freq: "daily", range: { daily: "1Y", weekly: "5Y" }, chart: null };
+const setups = { data: null, strong: new Map(), strongMetric: null, sel: null, freq: "daily", range: { daily: "1Y", weekly: "5Y" }, chart: null, panel: "chart" };
+try { if (localStorage.getItem("setupPanel") === "notes") setups.panel = "notes"; } catch (e) {}
 // "Tight Consolidation and above EMA 50": the filters every setup stock passes
 const filtersText = sep => (setups.data?.filters || [setups.data?.filter?.name || "the filter scan"]).join(sep);
 // Each stock once, newest in the setups first (fewest sessions; ties keep the stored order, tightest first)
@@ -663,8 +661,8 @@ function sectorTag(sector) {
 }
 function renderSetupChart() {
   const el = $("setupChart"), list = curList(), i = selIndex(), st = list[i];
-  renderNotes(st);
   if (!st) { el.innerHTML = `<div class="chempty">Nothing to chart.</div>`; setups.chart = null; return; }
+  const hasNotes = !!setups.data?.triage, notes = hasNotes && setups.panel === "notes";
   const tvSym = `${st.exchange || "NSE"}:${st.symbol.replace(/[^A-Za-z0-9]/g, "_")}`;
   const stats = [
     `₹${fmtP(st.close)} <span class="delta ${cls(r1(st.change_1d))}">${fmtPct(st.change_1d)}</span>`,
@@ -674,23 +672,39 @@ function renderSetupChart() {
       <div><a class="csym" href="https://trendvue.in/stocks/${encodeURIComponent(st.symbol)}" target="_blank" rel="noopener" title="Open on Trendvue">${esc(st.symbol)}</a>
         <span class="cquote">${stats} · <a href="https://www.tradingview.com/chart/?symbol=${encodeURIComponent(tvSym)}" target="_blank" rel="noopener">TradingView ↗</a></span></div>
       <div class="ctools">
-        <div class="seg" id="freqSeg" role="group" aria-label="Timeframe">${Object.keys(RANGES).map(f =>
+        ${hasNotes ? `<div class="seg" id="panelSeg" role="group" aria-label="Show">${[["chart", "Chart"], ["notes", "Notes"]].map(([p, label]) =>
+          `<button data-panel="${p}" aria-pressed="${(p === "notes") === notes}" title="${p === "notes" ? "Triage notes: what's driving the stock, its sector and industry, results, filings" : "Price chart"} (N)">${label}</button>`).join("")}</div>` : ""}
+        ${notes ? "" : `<div class="seg" id="freqSeg" role="group" aria-label="Timeframe">${Object.keys(RANGES).map(f =>
           `<button data-freq="${f}" aria-pressed="${f === setups.freq}">${f === "daily" ? "Daily" : "Weekly"}</button>`).join("")}</div>
         <div class="seg" id="rangeSeg" role="group" aria-label="Range">${Object.keys(RANGES[setups.freq]).map(r =>
-          `<button data-range="${r}" aria-pressed="${r === setups.range[setups.freq]}">${r}</button>`).join("")}</div>
+          `<button data-range="${r}" aria-pressed="${r === setups.range[setups.freq]}">${r}</button>`).join("")}</div>`}
         <div class="cnav"><button id="setPrev" aria-label="Previous stock (↑)" title="Previous stock (↑)" ${i <= 0 ? "disabled" : ""}>‹</button>${i + 1} / ${list.length}<button id="setNext" aria-label="Next stock (↓)" title="Next stock (↓)" ${i >= list.length - 1 ? "disabled" : ""}>›</button></div>
       </div>
     </div>
     <div class="cstats">${st.industry ? `${sectorTag(st.sector)} › ${esc(st.industry)}` : ""}
       ${scansOf(st.symbol).map(su => `<span class="scan" title="In Trendvue's ${esc(su.name)} scan${su.id === "top_movers" && st.movers?.length ? ` (top mover over ${st.movers.join(", ")})` : ""}">${esc(su.name)}${su.id === "top_movers" && st.movers?.length ? ` ${st.movers.join("/")}` : ""}</span>`).join("")}</div>
-    <div class="clegend" id="clegend"></div>
-    <div class="chart" id="chart"></div>`;
+    ${notes ? `<div class="snotes" id="setupNotes"></div>` : `<div class="clegend" id="clegend"></div>
+    <div class="chart" id="chart"></div>`}`;
   $("setPrev").onclick = () => selectSetup(i - 1);
   $("setNext").onclick = () => selectSetup(i + 1);
+  if (hasNotes) $("panelSeg").onclick = e => { const p = e.target.dataset.panel; if (p) setPanel(p); };
+  if (notes) return renderNotes(st);
   $("freqSeg").onclick = e => { const f = e.target.dataset.freq; if (f && f !== setups.freq) { setups.freq = f; saveChartPrefs(); renderSetupChart(); } };
   $("rangeSeg").onclick = e => { const r = e.target.dataset.range; if (r) { setups.range[setups.freq] = r; saveChartPrefs(); renderSetupChart(); } };
   drawChart();
 }
+// Chart | Notes: one at a time, at the full width of the area; remembered, and N switches between them.
+function setPanel(p) {
+  if (p === setups.panel) return;
+  setups.panel = p;
+  try { localStorage.setItem("setupPanel", p); } catch (e) {}
+  renderSetupChart();
+}
+addEventListener("keydown", e => {
+  if (state.page !== "setups" || !setups.data?.triage || e.altKey || e.ctrlKey || e.metaKey || e.key.toLowerCase() !== "n"
+      || e.target.closest?.("input, select, textarea")) return;
+  setPanel(setups.panel === "notes" ? "chart" : "notes");
+});
 
 // ---- Triage notes (triage.py): sector/industry status at 15%, what's driving the stock (DeepSeek, with sources),
 // results, ownership, health, concall guidance, filings and headlines. Shown beside (or below) the chart.
@@ -740,7 +754,8 @@ function renderNotes(st) {
     if (days >= 0) chips.push(`<span class="tchip${days <= 14 ? " warn" : ""}" title="Next results: an estimate from Trendvue, not a confirmed board meeting">Results ~${esc(shortDate(f.next_results))}${days <= 14 ? ` (${days}d)` : ""}</span>`);
   }
   if (f.growth) chips.push(`<span class="tchip${f.growth === "Accelerating" ? " strong" : f.growth === "Declining" ? " weak" : ""}" title="The latest quarter's YoY sales and EPS growth vs the quarter before">Growth ${esc(f.growth)}</span>`);
-  let h = `<h3>Triage</h3><div class="tchips">${chips.join("")}</div>`;
+  // left: the story (status, drivers, sector/industry, concall); right: the numbers and sources
+  let h = `<h3>Status</h3><div class="tchips">${chips.join("")}</div>`, r = "";
   if (!rec) {
     h += `<p class="tmeta">No notes for ${esc(st.symbol)} yet: they're written after the close.</p>`;
   } else {
@@ -749,22 +764,22 @@ function renderNotes(st) {
       h += `<p class="tsum">${esc(ai.summary || "—")}</p>`;
       if (ai.drivers?.length) h += `<ul>${ai.drivers.map(driverItem).join("")}</ul>`;
       if (ai.watch?.length) h += `<p><b>Watch:</b> ${ai.watch.map(esc).join(" · ")}</p>`;
-    } else h += `<p class="tmeta">No AI notes for this session${rec.model ? "" : " (no DeepSeek key set)"}. The filings and headlines are below.</p>`;
+    } else h += `<p class="tmeta">No AI notes for this session${rec.model ? "" : " (no DeepSeek key set)"}. The filings and headlines are listed here.</p>`;
   }
   h += `<h3>Sector and industry</h3>` + (groupBlock("sector", st.sector, t) + groupBlock("industry", st.industry, t) || `<p class="tmeta">—</p>`);
   if (rec) {
     const qs = (f.quarters || []).slice(-4).reverse();
-    if (qs.length) h += `<h3>Quarterly results</h3><table class="ttable"><tr><th>Quarter</th><th>Sales YoY</th><th>EPS YoY</th><th>OPM</th></tr>
+    if (qs.length) r += `<h3>Quarterly results</h3><table class="ttable"><tr><th>Quarter</th><th>Sales YoY</th><th>EPS YoY</th><th>OPM</th></tr>
       ${qs.map(q => `<tr><td>${esc(q.month || q.q || "")}</td><td class="${cls(q.sales_yoy)}">${fmtPct(q.sales_yoy)}</td><td class="${cls(q.eps_yoy)}">${fmtPct(q.eps_yoy)}</td><td>${q.opm == null ? "—" : q.opm.toFixed(1) + "%"}</td></tr>`).join("")}</table>`;
     const o = f.ownership;
-    if (o) h += `<h3>Ownership</h3><table class="ttable"><tr><th></th><th>Holding</th><th>1Q change</th><th>${o.fii?.quarters || 4}Q change</th></tr>
+    if (o) r += `<h3>Ownership</h3><table class="ttable"><tr><th></th><th>Holding</th><th>1Q change</th><th>${o.fii?.quarters || 4}Q change</th></tr>
       ${[["Promoters", o.promoters], ["FIIs", o.fii], ["DIIs", o.dii]].filter(r => r[1]).map(([k, v]) => `<tr><td>${k}</td><td>${v.now.toFixed(2)}%</td><td class="${cls(v.chg_q)}">${pts(v.chg_q)}</td><td class="${cls(v.chg_4q)}">${pts(v.chg_4q)}</td></tr>`).join("")}</table>`;
     const hl = f.health;
     if (hl) {
       const cell = (k, v) => `<div><span>${k}</span>${v ?? "—"}</div>`;
-      h += `<h3>Financial health</h3><div class="thealth">${cell("P/E", hl.pe)}${cell("Debt/equity", hl.de)}${cell("Interest cover", hl.icr == null ? null : hl.icr + "x")}
+      r += `<h3>Financial health</h3><div class="thealth">${cell("P/E", hl.pe)}${cell("Debt/equity", hl.de)}${cell("Interest cover", hl.icr == null ? null : hl.icr + "x")}
         ${cell("ROCE", hl.roce == null ? null : hl.roce + "%")}${cell("ROE", hl.roe == null ? null : hl.roe + "%")}${cell("FCF", hl.fcf_cr == null ? null : "₹" + hl.fcf_cr.toLocaleString("en-IN") + " cr")}</div>`;
-      if (f.flags?.length) h += `<ul class="tflags">${f.flags.map(x => `<li>${esc(x)}</li>`).join("")}</ul>`;
+      if (f.flags?.length) r += `<ul class="tflags">${f.flags.map(x => `<li>${esc(x)}</li>`).join("")}</ul>`;
     }
     const g = rec.guidance, cc = rec.concall;
     if (g?.guidance?.length || cc) {
@@ -773,11 +788,11 @@ function renderNotes(st) {
       else if (cc) h += `<p class="tmeta">No guidance read from this call.</p>`;
       if (cc) h += `<p class="tsrc">${[cc.transcript && tlink(cc.transcript, "Transcript"), cc.ppt && tlink(cc.ppt, "Presentation")].filter(Boolean).join(" · ")}</p>`;
     }
-    if (rec.filings?.length) h += `<h3>Latest filings</h3><ul>${rec.filings.map(x => `<li>${esc(shortDate(x.date))} · ${tlink(x.url, esc(x.title))}${x.summary ? `<div class="tmeta">${esc(x.summary)}</div>` : ""}</li>`).join("")}</ul>`;
-    if (rec.news?.length) h += `<h3>Headlines</h3><ul>${rec.news.slice(0, 6).map(x => `<li>${esc(shortDate(x.date))} · ${tlink(x.url, esc(x.title))} <span class="tsrc">${esc(x.source || "")}</span></li>`).join("")}</ul>`;
-    h += `<p class="tfoot">Notes of ${esc(fmtDate(rec.date))}${rec.model ? ` · AI notes by ${esc(rec.model)}, from the filings and headlines listed` : ""}. Numbers from Trendvue, filings from screener.in, headlines from Google News. Check the sources before you trade.${rec.screener_url ? " " + tlink(rec.screener_url, "screener.in ↗") : ""}</p>`;
+    if (rec.filings?.length) r += `<h3>Latest filings</h3><ul>${rec.filings.map(x => `<li>${esc(shortDate(x.date))} · ${tlink(x.url, esc(x.title))}${x.summary ? `<div class="tmeta">${esc(x.summary)}</div>` : ""}</li>`).join("")}</ul>`;
+    if (rec.news?.length) r += `<h3>Headlines</h3><ul>${rec.news.slice(0, 6).map(x => `<li>${esc(shortDate(x.date))} · ${tlink(x.url, esc(x.title))} <span class="tsrc">${esc(x.source || "")}</span></li>`).join("")}</ul>`;
   }
-  el.innerHTML = h;
+  const foot = rec ? `<p class="tfoot">Notes of ${esc(fmtDate(rec.date))}${rec.model ? ` · AI notes by ${esc(rec.model)}, from the filings and headlines listed` : ""}. Numbers from Trendvue, filings from screener.in, headlines from Google News. Check the sources before you trade.${rec.screener_url ? " " + tlink(rec.screener_url, "screener.in ↗") : ""}</p>` : "";
+  el.innerHTML = `<div class="tcols"><div class="tcol">${h}</div><div class="tcol">${r}</div></div>${foot}`;
 }
 
 // OHLC bars on a log price scale with EMA 20/50/200 and a volume pane, as on Trendvue. Hover for a bar's values.
