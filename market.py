@@ -237,6 +237,17 @@ def _store(con, snap_date, provisional, stocks, segments=None):
         )
 
 
+def _one_per_name(rows):
+    """One row per group name. Trendvue's industry list can repeat an industry (from 2026-11-27, each one appears once
+    with its sector and once with sector null): keep the first, or the repeat if only it has the sector."""
+    out = {}
+    for r in rows or []:
+        have = out.get(r["name"])
+        if have is None or (not have.get("sector") and r.get("sector")):
+            out[r["name"]] = r
+    return list(out.values())
+
+
 def take_snapshot(con=None):
     """Fetch everything and store it under the session it reflects.
 
@@ -248,9 +259,17 @@ def take_snapshot(con=None):
     any failure raises before the database is touched.
     """
     con = con or connect()
-    segments = {kind: fetch_json(url) for kind, url in SOURCES.items()}
+    segments = {kind: _one_per_name(fetch_json(url)) for kind, url in SOURCES.items()}
     if not segments["sector"]:
         raise RuntimeError("The data source returned no sector data")
+    # An industry without a sector (from 2026-11-27, Banks): the sector it was last stored under, so its stocks still
+    # count toward their sector.
+    known = {r["name"]: r["sector"] for r in con.execute(
+        "SELECT v.name, v.sector FROM segment_values v JOIN snapshots s ON s.id = v.snapshot_id"
+        " WHERE v.kind = 'industry' AND v.sector IS NOT NULL ORDER BY s.snap_date")}
+    for ind in segments["industry"]:
+        if not ind.get("sector") and known.get(ind["name"]):
+            ind["sector"] = known[ind["name"]]
     listing = {r["symbol"]: r for r in fetch_json(LISTING_URL)}
 
     members = []  # (industry, sector, stock row); a sector's stocks = union of its industries'
