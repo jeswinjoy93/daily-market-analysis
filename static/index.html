@@ -779,7 +779,8 @@ function renderNotes(st) {
     if (days >= 0) chips.push(`<span class="tchip${days <= 14 ? " warn" : ""}" title="Next results: an estimate from Trendvue, not a confirmed board meeting">Results ~${esc(shortDate(f.next_results))}${days <= 14 ? ` (${days}d)` : ""}</span>`);
   }
   if (f.growth) chips.push(`<span class="tchip${f.growth === "Accelerating" ? " strong" : f.growth === "Declining" ? " weak" : ""}" title="The latest quarter's YoY sales and EPS growth vs the quarter before">Growth ${esc(f.growth)}</span>`);
-  // left: the story (status, drivers, concall, sector/industry); right: the numbers
+  // left: the story (status, drivers, the 3 latest concalls, sector/industry); right: the numbers (results, ownership,
+  // health, earnings quality, guidance track record)
   let h = `<h3>Status</h3><div class="tchips">${chips.join("")}</div>`, r = "";
   if (!rec) {
     h += `<p class="tmeta">No notes for ${esc(st.symbol)} yet: they're written after the close.</p>`;
@@ -793,7 +794,7 @@ function renderNotes(st) {
   }
   if (rec) {
     if (rec.guidance?.guidance?.length || rec.concall) h += callBlock(rec.concall, rec.guidance);
-    if (rec.track?.items?.length) h += trackBlock(rec.track);
+    for (const c of rec.prev_calls || []) h += callBlock(c, c);  // the 2 calls before the latest
   }
   h += `<h3>Sector and industry</h3>` + (groupBlock("sector", st.sector, t) + groupBlock("industry", st.industry, t) || `<p class="tmeta">—</p>`);
   if (rec) {
@@ -816,8 +817,7 @@ function renderNotes(st) {
       r += `<h3>Earnings quality</h3><p class="tmeta">Is the profit one-time, or not turning into cash? ${esc(eq.basis)} figures${eq.quarter ? `, latest quarter ${esc(eq.quarter)}` : ""}${eq.lender ? " (lender: cash-flow and receivable checks don't apply)" : ""}</p>
         <ul class="tq">${eq.checks.map(c => `<li><span class="ttype ${tag[c.level][1]}">${tag[c.level][0]}</span><b>${esc(c.area)}:</b> ${esc(c.text)}</li>`).join("")}</ul>`;
     }
-    // the 2 concalls before the latest (the latest is on the left)
-    for (const c of rec.prev_calls || []) r += callBlock(c, c);
+    if (rec.track?.items?.length) r += trackBlock(rec.track);
     // with a note, its drivers link the filings and headlines that matter; without one, list them all
     if (!ai && rec.filings?.length) r += `<h3>Latest filings</h3><ul>${rec.filings.map(x => `<li>${esc(shortDate(x.date))} · ${tlink(x.url, esc(x.title))}${x.summary ? `<div class="tmeta">${esc(x.summary)}</div>` : ""}</li>`).join("")}</ul>`;
     if (!ai && rec.news?.length) r += `<h3>Headlines</h3><ul>${rec.news.slice(0, 6).map(x => `<li>${esc(shortDate(x.date))} · ${tlink(x.url, esc(x.title))} <span class="tsrc">${esc(x.source || "")}</span></li>`).join("")}</ul>`;
