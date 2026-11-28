@@ -743,6 +743,18 @@ function callBlock(cc, g) {
   if (cc) h += `<p class="tsrc">${[cc.transcript && tlink(cc.transcript, "Transcript"), cc.ppt && tlink(cc.ppt, "Presentation")].filter(Boolean).join(" · ")}</p>`;
   return h;
 }
+// the guidance track record: results since the earlier calls vs what management guided in them
+function trackBlock(tr) {
+  const tag = { delivered: ["Delivered", "ok"], ahead: ["Ahead", "ok"], "on track": ["On track", "ok"],
+    behind: ["Behind", "red"], "can't tell": ["Can't tell", ""] };
+  const verdict = { delivering: "strong", mixed: "warn", "falling short": "weak", "too early": "" }[tr.verdict];
+  const ytd = tr.fy_to_date;
+  return `<h3>Guidance track record</h3>
+    <p>${tr.verdict ? `<span class="tchip ${verdict ?? ""}">${esc(tr.verdict[0].toUpperCase() + tr.verdict.slice(1))}</span> ` : ""}${esc(tr.summary || "")}</p>
+    <p class="tmeta">Guidance from the ${esc((tr.calls || []).join(" and "))} calls vs results since${ytd?.sales != null ? `; ${esc(ytd.fiscal_year)} so far (${esc(ytd.quarters.join(", "))}): sales ₹${ytd.sales.toLocaleString("en-IN")} cr${ytd.sales_yoy != null ? ` (${fmtPct(ytd.sales_yoy)} YoY)` : ""}${ytd.np != null ? `, net profit ₹${ytd.np.toLocaleString("en-IN")} cr${ytd.np_yoy != null ? ` (${fmtPct(ytd.np_yoy)})` : ""}` : ""}${ytd.opm != null ? `, OPM ${ytd.opm}%` : ""}` : ""}</p>
+    <ul class="tq">${tr.items.map(i => { const [label, c] = tag[i.status] || tag["can't tell"];
+      return `<li><span class="ttype ${c}">${label}</span>${esc(i.text)}<div class="tmeta">${esc(i.call || "")}: “${esc(i.guidance)}”</div></li>`; }).join("")}</ul>`;
+}
 function groupBlock(kind, name, t) {
   const s = t.status, g = s?.[kind]?.[name], ai = t[kind]?.[name]?.ai;
   if (!name || (!g && !ai)) return "";
@@ -781,6 +793,7 @@ function renderNotes(st) {
   }
   if (rec) {
     if (rec.guidance?.guidance?.length || rec.concall) h += callBlock(rec.concall, rec.guidance);
+    if (rec.track?.items?.length) h += trackBlock(rec.track);
   }
   h += `<h3>Sector and industry</h3>` + (groupBlock("sector", st.sector, t) + groupBlock("industry", st.industry, t) || `<p class="tmeta">—</p>`);
   if (rec) {

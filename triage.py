@@ -15,7 +15,8 @@ Code does the numbers, an LLM (DeepSeek) does the reading:
   batches and, once the 14 days run out, a 28-day search, while it has picked fewer than 6); the stock's note is
   written from them. The page shows the filings and headlines the note cites (and lists them only without a note).
 - Notes (DeepSeek, needs DEEPSEEK_API_KEY): what is driving the stock, what moved its sector and industry over the
-  short and the long term, and management's guidance from each of the 3 concalls (read once per transcript). Without a key the code-only parts are
+  short and the long term, management's guidance from each of the 3 concalls (read once per transcript), and a
+  track record: how results since the 2 earlier calls compare with what management guided in them. Without a key the code-only parts are
   still stored and shown.
 
 Runs once per setups session, after the close (triage_due), from `market.py auto`, the local server's loop, or
@@ -854,6 +855,126 @@ def guidance_note(company, concall, text, key, usage):
             "call": concall.get("month"), "transcript": concall.get("transcript")}
 
 
+# ---- guidance track record: results since earlier calls vs what management guided ---------------------------------
+
+TRACK_STATUSES = ["delivered", "ahead", "on track", "behind", "can't tell"]
+TRACK_VERDICTS = ["delivering", "mixed", "falling short", "too early"]
+
+TRACK_SYSTEM = f"""You check how an Indian listed company has done against the guidance its management gave in
+earlier earnings calls. You get EARLIER_GUIDANCE (points from earlier calls, each with the call's month and the quarters
+reported since that call), RESULTS (quarterly results from code: sales and net profit in ₹ crore, growth in % YoY,
+opm = operating margin in %), FY_TO_DATE (the current fiscal year's reported quarters added up by code) and LATEST_CALL
+(what management said in its most recent call).
+{GUARD}
+Reply with JSON only, exactly this shape:
+{{"verdict": one of {json.dumps(TRACK_VERDICTS)}, "summary": "at most 30 words: how results have tracked the earlier guidance",
+ "items": [{{"id": "G1", "status": one of {json.dumps(TRACK_STATUSES)}, "text": "at most 25 words: the evidence, with its numbers"}}]}}
+One item per EARLIER_GUIDANCE point, in its order. Status:
+- delivered: the guided period has been reported and results met the target; ahead: they beat it.
+- on track: the guided period isn't complete yet (for example a full year) and results so far are in line.
+- behind: results so far fall short, or the latest call lowered, delayed or dropped the target.
+- can't tell: no quarter reported since the call bears on it, and the latest call doesn't mention it.
+Judge only from RESULTS, FY_TO_DATE and LATEST_CALL, quoting their numbers; don't compute new ones. Verdict: delivering
+if most judged points are delivered, ahead or on track; falling short if most are behind; too early if none can be
+judged yet; else mixed."""
+
+
+def _month(label):
+    """'Jul 2026' -> (2026, 7), or None."""
+    try:
+        d = datetime.strptime(str(label or "").strip(), "%b %Y")
+        return d.year, d.month
+    except ValueError:
+        return None
+
+
+def _fiscal_year(ended):
+    """The Indian fiscal year of a quarter by the month it ended: 'Sep 2026' -> 'FY27', 'Mar 2026' -> 'FY26'."""
+    ym = _month(ended)
+    return None if not ym else f"FY{(ym[0] + (1 if ym[1] > 3 else 0)) % 100:02d}"
+
+
+def fy_to_date(quarters):
+    """The latest fiscal year's reported quarters added up: sales and net profit with their YoY growth (from each
+    quarter's own YoY), and the sales-weighted operating margin."""
+    qs = [q for q in quarters or [] if q.get("month")]
+    if not qs:
+        return None
+    fy = _fiscal_year(qs[-1]["month"])
+    cur = [q for q in qs if _fiscal_year(q["month"]) == fy]
+
+    def total(k):
+        vals = [q.get(k) for q in cur]
+        if any(v is None for v in vals):
+            return None, None
+        before = [q[k] / (1 + q[k + "_yoy"] / 100) if q.get(k + "_yoy") not in (None, -100) else None for q in cur]
+        yoy = None if any(b is None for b in before) or not sum(before) else round((sum(vals) / sum(before) - 1) * 100, 1)
+        return round(sum(vals), 1), yoy
+
+    sales, sales_yoy = total("sales")
+    np_, np_yoy = total("np")
+    opm = round(sum(q["opm"] * q["sales"] for q in cur) / sales, 1) if sales and all(
+        q.get("opm") is not None and q.get("sales") for q in cur) else None
+    return {"fiscal_year": fy, "quarters": [q["month"] for q in cur], "sales": sales, "sales_yoy": sales_yoy,
+            "np": np_, "np_yoy": np_yoy, "opm": opm}
+
+
+def _track_inputs(rec):
+    """The earlier calls with guidance (each with the quarters reported since it), or None if there's nothing to
+    judge. Also the cache key: the transcripts read and the latest quarter, so a record is redone only when a new
+    call or a new quarter's results come in."""
+    calls = [c for c in rec.get("prev_calls") or [] if c.get("guidance")]
+    quarters = ((rec.get("facts") or {}).get("quarters")) or []
+    if not calls or not quarters:
+        return None, None
+    latest = rec.get("guidance") or {}
+    key = json.dumps([[c.get("transcript") for c in calls], latest.get("transcript"), quarters[-1].get("month")])
+    return calls, key
+
+
+def track_note(rec, key, usage):
+    """How results since the 2 earlier calls compare with what management guided in them (DeepSeek, from numbers
+    computed by code)."""
+    calls, cache_key = _track_inputs(rec)
+    if not calls:
+        return None
+    quarters = rec["facts"]["quarters"]
+    items, points = [], {}
+    for c in calls:
+        cm = _month(c.get("month"))
+        since = [q["month"] for q in quarters if cm and _month(q.get("month")) and _month(q["month"]) > cm]
+        for g in c["guidance"]:
+            gid = f"G{len(points) + 1}"
+            points[gid] = {"call": c.get("month"), "guidance": g}
+            items.append({"id": gid, "call": c.get("month"), "quarters_reported_since": since, "guidance": g})
+    latest = rec.get("guidance") or {}
+    payload = {"company": rec.get("company_name"), "EARLIER_GUIDANCE": items,
+               "RESULTS": [{k: q.get(k) for k in ("month", "sales", "sales_yoy", "np", "np_yoy", "opm")} for q in quarters],
+               "FY_TO_DATE": fy_to_date(quarters),
+               "LATEST_CALL": {"month": latest.get("call"), "guidance": latest.get("guidance") or [], "tone": latest.get("tone")}}
+    ans = ask_json(TRACK_SYSTEM, json.dumps(payload, ensure_ascii=False), key, usage, max_tokens=1200)
+    out = []
+    for it in ans.get("items") or []:
+        p = points.get(str((it or {}).get("id", "")).strip()) if isinstance(it, dict) else None
+        if p and it.get("text") and all(o["guidance"] != p["guidance"] for o in out):
+            status = str(it.get("status") or "").strip().lower()
+            out.append({**p, "status": status if status in TRACK_STATUSES else "can't tell", "text": str(it["text"]).strip()})
+    verdict = str(ans.get("verdict") or "").strip().lower()
+    return {"key": cache_key, "verdict": verdict if verdict in TRACK_VERDICTS else None,
+            "summary": str(ans.get("summary") or "").strip(), "items": out,
+            "calls": [c.get("month") for c in calls], "fy_to_date": payload["FY_TO_DATE"]}
+
+
+def _known_tracks(con, symbol):
+    """Track records already made in earlier sessions, by their cache key."""
+    out = {}
+    for r in con.execute("SELECT data FROM triage WHERE kind = 'stock' AND name = ? ORDER BY snap_date DESC LIMIT 10", (symbol,)):
+        t = json.loads(r["data"]).get("track")
+        if t and t.get("key"):
+            out.setdefault(t["key"], t)
+    return out
+
+
 # ---- the run ------------------------------------------------------------------------------------------------------
 
 def _latest_setups(con):
@@ -985,9 +1106,18 @@ def take_triage(con, force=False, now=None):
                         continue
                     if g:
                         call.update({k: g[k] for k in ("guidance", "tone", "read_with")})
+            try:  # results vs the earlier calls' guidance: redone only for a new call or a new quarter
+                _, tkey = _track_inputs(rec)
+                rec["track"] = tracks.get(st["symbol"], {}).get(tkey) if tkey else None
+                if tkey and rec["track"] is None:
+                    rec["track"] = track_note(rec, key, usage)
+            except Exception as e:
+                print(f"[triage] {st['symbol']} track record: {e}")
 
+        tracks = {}
         for st in todo:  # guidance already read from the same transcripts (here: sqlite connections stay on one thread)
             rec = recs[st["symbol"]]
+            tracks[st["symbol"]] = _known_tracks(con, st["symbol"])
             known = _known_guidance(con, st["symbol"])
             cc = rec.get("concall") or {}
             if cc.get("transcript") in known:
