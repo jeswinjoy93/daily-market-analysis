@@ -8,14 +8,14 @@ Code does the numbers, an LLM (DeepSeek) does the reading:
 - Stock facts (code): Trendvue's stock bundle: last quarters' growth, margins, debt, returns, promoter/FII/DII
   holdings over the last quarters, and the (estimated) next results date.
 - Filings (code): the latest announcements on the stock's screener.in page (with screener's one-line summaries),
-  and its latest concall transcript, read from the PDF (needs `pypdf`, else DeepSeek's fetch API, else skipped).
+  and its latest 3 concall transcripts, read from the PDF (needs `pypdf`, else DeepSeek's fetch API, else skipped).
 - News (code): Google News headlines for the stock (last 14 days) and for its sector and industry
   (last 14 days and last 6 months), filtered: a stock's headline must name the company, templated price/rating/list
   pages are dropped, and a story is kept once. The model then picks the stock headlines worth reading (older
   batches and, once the 14 days run out, a 28-day search, while it has picked fewer than 6); the stock's note is
-  written from them, and they are the headlines shown on the page.
+  written from them. The page shows the filings and headlines the note cites (and lists them only without a note).
 - Notes (DeepSeek, needs DEEPSEEK_API_KEY): what is driving the stock, what moved its sector and industry over the
-  short and the long term, and management's guidance from the concall. Without a key the code-only parts are
+  short and the long term, and management's guidance from each of the 3 concalls (read once per transcript). Without a key the code-only parts are
   still stored and shown.
 
 Runs once per setups session, after the close (triage_due), from `market.py auto`, the local server's loop, or
@@ -55,6 +55,7 @@ NEWS_RETRIES = 2                # more batches of a stock's headlines when the m
 NEWS_POOL = MAX_HEADLINES * (1 + NEWS_RETRIES)  # a stock's headlines kept after the filters
 SHOWN_HEADLINES = 6             # per stock, on the page
 TRANSCRIPT_CHARS = 120_000      # of a concall transcript sent to the model (~30K tokens)
+CONCALLS = 3                    # the latest concall and the 2 before it, each with the guidance read from it
 MAX_AI_ATTEMPTS = 3             # per stock and session, so a bad key or an outage doesn't retry forever
 
 DEEPSEEK_URL = "https://api.deepseek.com/chat/completions"
@@ -394,7 +395,7 @@ def earnings_quality(fin, sched, consolidated):
 
 def screener(symbol):
     """The stock's screener.in page (consolidated when the company reports consolidated figures): full name, latest
-    announcements (title, date, summary, link), latest concall (month, transcript and presentation links) and the
+    announcements (title, date, summary, link), latest 3 concalls (month, transcript and presentation links) and the
     earnings-quality checks on its financials. None if screener doesn't know the symbol."""
     url = SCREENER_URL.format(urllib.parse.quote(symbol, safe=""))
     page, consolidated = _get(url), False
@@ -433,14 +434,21 @@ def screener(symbol):
             out["filings"].append({"date": t.group(1)[:10] if t else None, "title": _text(title), "summary": summary,
                                    "url": urllib.parse.urljoin("https://www.screener.in/", html.unescape(href))})
     i = page.find("Concalls</h3>")
+    calls = {}  # month -> call; screener can list a quarter twice (a re-filed transcript): one per month
     if i >= 0:
-        li = re.search(r"<li[^>]*>(.*?)</li>", page[i:i + 6000], re.S)
-        if li:
-            when = re.search(r"<div[^>]*>(.*?)</div>", li.group(1), re.S)
-            links = {_text(t).lower(): html.unescape(h) for h, t in re.findall(r"<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>", li.group(1), re.S)}
-            if links.get("transcript") or links.get("ppt"):
-                out["concall"] = {"month": _text(when.group(1)) if when else None,
-                                  "transcript": links.get("transcript"), "ppt": links.get("ppt")}
+        for li in re.findall(r"<li[^>]*>(.*?)</li>", page[i:page.find("</ul>", i)], re.S):
+            when = re.search(r"<div[^>]*>(.*?)</div>", li, re.S)
+            month = _text(when.group(1)) if when else None
+            links = {_text(t).lower(): html.unescape(h) for h, t in re.findall(r"<a[^>]+href=\"([^\"]+)\"[^>]*>(.*?)</a>", li, re.S)}
+            if not (links.get("transcript") or links.get("ppt")):
+                continue
+            if month not in calls and len(calls) == CONCALLS:
+                break
+            c = calls.setdefault(month, {"month": month, "transcript": None, "ppt": None})
+            c["transcript"] = c["transcript"] or links.get("transcript")
+            c["ppt"] = c["ppt"] or links.get("ppt")
+    out["concalls"] = list(calls.values())
+    out["concall"] = out["concalls"][0] if out["concalls"] else None
     return out
 
 
@@ -875,13 +883,22 @@ def triage_due(con, now=None):
     return any(_needs(done.get(st["symbol"]), key) for st in stocks)
 
 
-def _prev_guidance(con, symbol, transcript):
-    """Guidance already read from this transcript in an earlier session (transcripts change once a quarter)."""
+def _known_guidance(con, symbol):
+    """Guidance already read in earlier sessions, by transcript link (from the latest call or the previous ones):
+    a transcript is read once."""
+    out = {}
     for r in con.execute("SELECT data FROM triage WHERE kind = 'stock' AND name = ? ORDER BY snap_date DESC LIMIT 10", (symbol,)):
-        g = json.loads(r["data"]).get("guidance")
-        if g and g.get("transcript") == transcript:
-            return g
-    return None
+        d = json.loads(r["data"])
+        for g in [d.get("guidance")] + [{**c, "call": c.get("month")} for c in d.get("prev_calls") or []]:
+            if g and g.get("transcript") and isinstance(g.get("guidance"), list):
+                out.setdefault(g["transcript"], {k: g.get(k) for k in ("guidance", "tone", "call", "transcript", "read_with")})
+    return out
+
+
+def _read_guidance(company, call, key, usage):
+    """Read one call's transcript and the guidance in it: the guidance fields, or None when it can't be read."""
+    text, how = transcript_text(call["transcript"], key)
+    return {**guidance_note(company, call, text, key, usage), "read_with": how} if text else None
 
 
 def take_triage(con, force=False, now=None):
@@ -914,6 +931,7 @@ def take_triage(con, force=False, now=None):
         time.sleep(SCREENER_GAP)
         rec.update(company_name=(scr or {}).get("name") or st.get("company"), screener_url=(scr or {}).get("url"),
                    filings=(scr or {}).get("filings", []), concall=(scr or {}).get("concall"),
+                   prev_calls=[dict(c) for c in ((scr or {}).get("concalls") or [])[1:]],
                    quality=(scr or {}).get("quality"))
         q = _search_name(rec["company_name"], sym, st.get("company"))
         rec["news_query"] = q
@@ -954,17 +972,30 @@ def take_triage(con, force=False, now=None):
             try:
                 cc = rec.get("concall") or {}
                 if cc.get("transcript") and rec.get("guidance") is None:
-                    text, how = transcript_text(cc["transcript"], key)
-                    if text:
-                        rec["guidance"] = {**guidance_note(rec["company_name"], cc, text, key, usage), "read_with": how}
+                    rec["guidance"] = _read_guidance(rec["company_name"], cc, key, usage)
                 rec["ai"] = stock_note(st, rec, groups, key, usage)
             except Exception as e:
                 errors.append(f"{st['symbol']}: {e}")
+            for call in rec.get("prev_calls") or []:  # shown on their own: a failure here doesn't stop the note
+                if call.get("transcript") and call.get("guidance") is None:
+                    try:
+                        g = _read_guidance(rec["company_name"], call, key, usage)
+                    except Exception as e:
+                        print(f"[triage] {st['symbol']} {call.get('month')} concall: {e}")
+                        continue
+                    if g:
+                        call.update({k: g[k] for k in ("guidance", "tone", "read_with")})
 
-        for st in todo:  # guidance already read from the same transcript (here: sqlite connections stay on one thread)
-            cc = recs[st["symbol"]].get("concall") or {}
-            if cc.get("transcript"):
-                recs[st["symbol"]]["guidance"] = _prev_guidance(con, st["symbol"], cc["transcript"])
+        for st in todo:  # guidance already read from the same transcripts (here: sqlite connections stay on one thread)
+            rec = recs[st["symbol"]]
+            known = _known_guidance(con, st["symbol"])
+            cc = rec.get("concall") or {}
+            if cc.get("transcript") in known:
+                rec["guidance"] = known[cc["transcript"]]
+            for call in rec.get("prev_calls") or []:
+                g = known.get(call.get("transcript"))
+                if g:
+                    call.update({k: g.get(k) for k in ("guidance", "tone", "read_with")})
         with ThreadPoolExecutor(AI_WORKERS) as pool:
             list(pool.map(do_group, grecs.items()))
         with ThreadPoolExecutor(AI_WORKERS) as pool:
@@ -994,11 +1025,10 @@ def load(con, snap_date):
     for r in con.execute("SELECT kind, name, snap_date, fetched_at, data FROM triage WHERE snap_date <= ?"
                          " ORDER BY snap_date", (snap_date,)):
         d = json.loads(r["data"])
-        if r["kind"] == "stock":  # the page shows the model's headline picks (else the newest 6)
-            news_, picks = d.get("news", []), (d.get("ai") or {}).get("news")
-            shown = [news_[i] for i in picks if i < len(news_)] if isinstance(picks, list) else news_[:SHOWN_HEADLINES]
-            out["stocks"][r["name"]] = {**d, "news": shown, "news_picked": isinstance(picks, list),
-                                        "date": r["snap_date"], "fetched_at": r["fetched_at"]}
+        if r["kind"] == "stock":  # with a note, its drivers link the sources; without, the page lists them
+            src = {"filings": [], "news": []} if d.get("ai") else \
+                {"filings": d.get("filings", []), "news": d.get("news", [])[:SHOWN_HEADLINES]}
+            out["stocks"][r["name"]] = {**d, **src, "date": r["snap_date"], "fetched_at": r["fetched_at"]}
         else:  # the group's headlines were the model's input; its notes carry the links they used
             out[r["kind"]][r["name"]] = {"ai": d.get("ai"), "model": d.get("model"), "date": r["snap_date"]}
     status = group_status(con)
